@@ -12,7 +12,10 @@
     "build:linux:deb": "electron-builder --linux deb --config.directories.output=dist/linux",
     "build:linux:rpm": "electron-builder --linux rpm --config.directories.output=dist/linux"
   },
-  "author": "DippyCoder",
+  "author": {
+    "name": "DippyCoder",
+    "email": "planewriter255@gmail.com"
+  },
   "build": {
     "appId": "com.dippycoder.mcpanel",
     "productName": "MCPanel",
