@@ -7,9 +7,11 @@ let profiles = [];
 let currentServerId = null;
 let versionCache = {};
 let statusPollInterval = null;
+let uptimeInterval = null;
 let commandHistory = [];
 let historyIndex = -1;
 let startingServers = new Set();
+let serverStartTimes = {};
 let pendingEulaServerId = null;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -19,6 +21,7 @@ async function init() {
   renderServersGrid();
   renderSidebarServers();
   startStatusPolling();
+  startUptimeTicker();
 
   // Event listeners
   window.mcpanel.on('server-log', ({ id, line, type }) => {
@@ -27,9 +30,14 @@ async function init() {
 
   window.mcpanel.on('server-stopped', ({ id }) => {
     startingServers.delete(id);
+    delete serverStartTimes[id];
+    const uptimeEl = document.getElementById(`uptime-${id}`);
+    if (uptimeEl) uptimeEl.textContent = '—';
     if (id === currentServerId) {
       appendConsoleLine('Server stopped.', 'system');
       updateDetailControls(false);
+      const detailUptime = document.getElementById('detail-uptime');
+      if (detailUptime) detailUptime.textContent = '—';
     }
     updateServerCardStatus(id, false, 0);
     updateSidebarDot(id, false);
@@ -97,6 +105,12 @@ function openServerDetail(id) {
     if (running) updateDetailOnline(true);
   });
 
+  // Initialise uptime display
+  const detailUptime = document.getElementById('detail-uptime');
+  if (detailUptime) {
+    detailUptime.textContent = serverStartTimes[id] ? formatUptime(Date.now() - serverStartTimes[id]) : '—';
+  }
+
   // Storage stats (async)
   window.mcpanel.getServerDirStats(id).then(({ size }) => {
     if (srv.storageLimit) {
@@ -149,6 +163,10 @@ function createServerCard(srv) {
       <div class="stat-chip">
         <div class="stat-chip-label">Storage</div>
         <div class="stat-chip-value" id="storage-${srv.id}">${srv.storageLimit || '∞'}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Uptime</div>
+        <div class="stat-chip-value" id="uptime-${srv.id}">—</div>
       </div>
     </div>
     <div class="server-card-footer">
@@ -229,6 +247,33 @@ function updateSidebarDot(id, online) {
   }
 }
 
+// ─── Uptime Ticker ────────────────────────────────────────────────────────────
+function formatUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+function startUptimeTicker() {
+  if (uptimeInterval) clearInterval(uptimeInterval);
+  uptimeInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [id, startTime] of Object.entries(serverStartTimes)) {
+      const uptime = formatUptime(now - startTime);
+      const cardEl = document.getElementById(`uptime-${id}`);
+      if (cardEl) cardEl.textContent = uptime;
+      if (currentServerId === id) {
+        const detailEl = document.getElementById('detail-uptime');
+        if (detailEl) detailEl.textContent = uptime;
+      }
+    }
+  }, 1000);
+}
+
 // ─── Status Polling ───────────────────────────────────────────────────────────
 function startStatusPolling() {
   if (statusPollInterval) clearInterval(statusPollInterval);
@@ -242,6 +287,7 @@ async function pollAllStatuses() {
     if (running) {
       const status = await window.mcpanel.pingServer('127.0.0.1', parseInt(srv.port));
       if (status && status.players != null) {
+        if (!serverStartTimes[srv.id]) serverStartTimes[srv.id] = Date.now();
         startingServers.delete(srv.id);
         updateServerCardStatus(srv.id, true, status.players || 0);
         updateSidebarDot(srv.id, true);
@@ -256,6 +302,15 @@ async function pollAllStatuses() {
       }
     } else {
       startingServers.delete(srv.id);
+      if (serverStartTimes[srv.id]) {
+        delete serverStartTimes[srv.id];
+        const uptimeEl = document.getElementById(`uptime-${srv.id}`);
+        if (uptimeEl) uptimeEl.textContent = '—';
+        if (currentServerId === srv.id) {
+          const detailUptime = document.getElementById('detail-uptime');
+          if (detailUptime) detailUptime.textContent = '—';
+        }
+      }
       updateServerCardStatus(srv.id, false, 0);
       updateSidebarDot(srv.id, false);
       if (currentServerId === srv.id) updateDetailControls(false);
@@ -786,6 +841,125 @@ async function createProfile() {
   toast(`Profile "${name}" created! Open the folder to add files.`, 'success');
   // Auto-open folder
   window.mcpanel.openProfileFolder(r.profile.id);
+}
+
+// ─── Import Profile ───────────────────────────────────────────────────────────
+function openImportProfileModal() {
+  document.getElementById('ip-folder-path').value = '';
+  document.getElementById('ip-name').value = '';
+  document.getElementById('ip-desc').value = '';
+  document.getElementById('ip-versions').value = '';
+  document.querySelectorAll('#ip-software-checks input').forEach(cb => cb.checked = false);
+  openModal('modal-import-profile');
+}
+
+async function browseImportProfileFolder() {
+  const folderPath = await window.mcpanel.browseFolder();
+  if (!folderPath) return;
+  document.getElementById('ip-folder-path').value = folderPath;
+  const scan = await window.mcpanel.scanProfileFolder(folderPath);
+  if (scan.name) document.getElementById('ip-name').value = scan.name;
+  if (scan.description) document.getElementById('ip-desc').value = scan.description;
+  if (scan.software && scan.software.length > 0) {
+    document.querySelectorAll('#ip-software-checks input').forEach(cb => {
+      cb.checked = scan.software.includes(cb.value);
+    });
+  }
+  if (scan.versions && scan.versions.length > 0) {
+    document.getElementById('ip-versions').value = scan.versions.join(', ');
+  }
+  // Auto-fill name from folder if profile.json had none
+  if (!document.getElementById('ip-name').value) {
+    document.getElementById('ip-name').value = folderPath.split(/[/\\]/).pop();
+  }
+}
+
+async function importProfile() {
+  const folderPath = document.getElementById('ip-folder-path').value.trim();
+  const name = document.getElementById('ip-name').value.trim();
+  if (!folderPath) { toast('Please select a folder', 'error'); return; }
+  if (!name) { toast('Please enter a profile name', 'error'); return; }
+
+  const description = document.getElementById('ip-desc').value.trim();
+  const software = Array.from(document.querySelectorAll('#ip-software-checks input:checked')).map(cb => cb.value);
+  const versionsRaw = document.getElementById('ip-versions').value.trim();
+  const versions = versionsRaw ? versionsRaw.split(',').map(v => v.trim()).filter(Boolean) : [];
+
+  const btn = document.getElementById('ip-submit');
+  btn.disabled = true; btn.textContent = 'Importing...';
+
+  const r = await window.mcpanel.importProfile({ folderPath, name, description, software, versions });
+  btn.disabled = false; btn.textContent = 'Import Profile';
+
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  profiles.push(r.profile);
+  closeModal('modal-import-profile');
+  renderProfilesGrid();
+  toast(`Profile "${name}" imported!`, 'success');
+}
+
+// ─── Import Server ────────────────────────────────────────────────────────────
+function openImportServerModal() {
+  document.getElementById('is-folder-path').value = '';
+  document.getElementById('is-name').value = '';
+  document.getElementById('is-version').value = '';
+  document.getElementById('is-port').value = '25565';
+  document.getElementById('is-software').value = 'paper';
+  document.getElementById('is-ram').value = '2G';
+  document.getElementById('is-java').value = 'java';
+  document.getElementById('is-java-args').value = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200';
+  openModal('modal-import-server');
+}
+
+async function browseImportServerFolder() {
+  const folderPath = await window.mcpanel.browseFolder();
+  if (!folderPath) return;
+  document.getElementById('is-folder-path').value = folderPath;
+  const scan = await window.mcpanel.scanServerFolder(folderPath);
+  if (scan.port) document.getElementById('is-port').value = scan.port;
+  if (scan.software) document.getElementById('is-software').value = scan.software;
+  if (scan.version) document.getElementById('is-version').value = scan.version;
+  if (!document.getElementById('is-name').value) {
+    document.getElementById('is-name').value = folderPath.split(/[/\\]/).pop();
+  }
+}
+
+async function browseJavaImport() {
+  const p = await window.mcpanel.browseJava();
+  if (p) document.getElementById('is-java').value = p;
+}
+
+async function importServer() {
+  const folderPath = document.getElementById('is-folder-path').value.trim();
+  const name = document.getElementById('is-name').value.trim();
+  if (!folderPath) { toast('Please select a server folder', 'error'); return; }
+  if (!name) { toast('Please enter a server name', 'error'); return; }
+
+  const software = document.getElementById('is-software').value;
+  const version = document.getElementById('is-version').value.trim() || 'Unknown';
+  const port = parseInt(document.getElementById('is-port').value) || 25565;
+  const ram = document.getElementById('is-ram').value;
+  const javaPath = document.getElementById('is-java').value.trim() || 'java';
+  const javaArgs = document.getElementById('is-java-args').value.trim();
+
+  const btn = document.getElementById('is-submit');
+  btn.disabled = true; btn.textContent = 'Importing...';
+
+  closeModal('modal-import-server');
+  document.getElementById('modal-download-title').textContent = 'Importing Server';
+  openModal('modal-download');
+
+  const r = await window.mcpanel.importServer({ folderPath, name, software, version, port, ram, javaPath, javaArgs });
+
+  closeModal('modal-download');
+  document.getElementById('modal-download-title').textContent = 'Creating Server';
+  btn.disabled = false; btn.textContent = 'Import Server';
+
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  config.servers.push(r.server);
+  renderServersGrid();
+  renderSidebarServers();
+  toast(`Server "${name}" imported!`, 'success');
 }
 
 // ─── Update checker ───────────────────────────────────────────────────────────

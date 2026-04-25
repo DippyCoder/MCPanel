@@ -697,6 +697,95 @@ ipcMain.handle('open-external', (_, url) => {
   shell.openExternal(url);
 });
 
+ipcMain.handle('browse-folder', async () => {
+  const result = await dialog.showOpenDialog({ title: 'Select Folder', properties: ['openDirectory'] });
+  if (!result.canceled && result.filePaths.length > 0) return result.filePaths[0];
+  return null;
+});
+
+ipcMain.handle('scan-server-folder', (_, folderPath) => {
+  try {
+    const result = { port: 25565, software: null, version: null };
+    const propsFile = path.join(folderPath, 'server.properties');
+    if (fs.existsSync(propsFile)) {
+      const props = fs.readFileSync(propsFile, 'utf8');
+      const portMatch = props.match(/^server-port=(\d+)/m);
+      if (portMatch) result.port = parseInt(portMatch[1]);
+    }
+    const softwareKeys = ['paper', 'purpur', 'leaf', 'fabric', 'velocity', 'spigot', 'vanilla'];
+    const jars = fs.existsSync(folderPath) ? fs.readdirSync(folderPath).filter(f => f.endsWith('.jar')) : [];
+    for (const jar of jars) {
+      const lc = jar.toLowerCase();
+      for (const key of softwareKeys) {
+        if (lc.includes(key)) { result.software = key; break; }
+      }
+      if (result.software) break;
+    }
+    return result;
+  } catch { return { port: 25565 }; }
+});
+
+ipcMain.handle('scan-profile-folder', (_, folderPath) => {
+  try {
+    const metaFile = path.join(folderPath, 'profile.json');
+    if (fs.existsSync(metaFile)) {
+      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      return { name: meta.name || '', description: meta.description || '', software: meta.software || [], versions: meta.versions || [] };
+    }
+    return {};
+  } catch { return {}; }
+});
+
+ipcMain.handle('import-profile', (_, { folderPath, name, description, software, versions }) => {
+  try {
+    const id = 'profile_' + Date.now();
+    const profileDir = path.join(PROFILES_DIR, id);
+    fs.mkdirSync(profileDir, { recursive: true });
+    copyDirSync(folderPath, profileDir);
+    const meta = {
+      id, name,
+      description: description || '',
+      software: software || [],
+      versions: versions || [],
+      created: Date.now(),
+    };
+    fs.writeFileSync(path.join(profileDir, 'profile.json'), JSON.stringify(meta, null, 2));
+    return { success: true, profile: meta };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle('import-server', async (event, { folderPath, name, port, ram, software, version, javaPath, javaArgs }) => {
+  try {
+    const cfg = loadConfig();
+    const id = 'srv_' + Date.now();
+    const serverDir = path.join(SERVERS_DIR, id);
+    event.sender.send('download-progress', { id, progress: 0, status: 'Copying server files...' });
+    fs.mkdirSync(serverDir, { recursive: true });
+    copyDirSync(folderPath, serverDir);
+    const server = {
+      id, name,
+      port: port || 25565,
+      ram: ram || '2G',
+      storageLimit: null,
+      software: software || 'paper',
+      version: version || 'Unknown',
+      profileId: null,
+      javaPath: javaPath || 'java',
+      javaArgs: javaArgs || '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200',
+      created: Date.now(),
+      dir: serverDir,
+    };
+    cfg.servers.push(server);
+    saveConfig(cfg);
+    event.sender.send('download-progress', { id, progress: 100, status: 'Done!' });
+    return { success: true, server };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 // ─── Window ───────────────────────────────────────────────────────────────────
 let mainWindow;
 

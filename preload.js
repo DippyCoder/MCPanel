@@ -45,6 +45,13 @@ contextBridge.exposeInMainWorld('mcpanel', {
   // EULA
   acceptEula: (id) => ipcRenderer.invoke('accept-eula', id),
 
+  // Import
+  browseFolder: () => ipcRenderer.invoke('browse-folder'),
+  scanServerFolder: (fp) => ipcRenderer.invoke('scan-server-folder', fp),
+  scanProfileFolder: (fp) => ipcRenderer.invoke('scan-profile-folder', fp),
+  importProfile: (data) => ipcRenderer.invoke('import-profile', data),
+  importServer: (data) => ipcRenderer.invoke('import-server', data),
+
   // Updates
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),

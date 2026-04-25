@@ -70,10 +70,16 @@
           <h1>Servers</h1>
           <p class="page-subtitle">Manage your Minecraft instances</p>
         </div>
-        <button class="btn-primary" onclick="openCreateServerModal()">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
-          New Server
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn-ghost" onclick="openImportServerModal()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Import
+          </button>
+          <button class="btn-primary" onclick="openCreateServerModal()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            New Server
+          </button>
+        </div>
       </div>
       <div class="servers-grid" id="servers-grid">
         <div class="empty-state hidden" id="servers-empty">
@@ -134,6 +140,7 @@
                 <div class="stat-row"><span>Port</span><span id="detail-port" class="mono">—</span></div>
                 <div class="stat-row"><span>Players</span><span id="detail-players" class="mono">—</span></div>
                 <div id="detail-player-list" style="display:none;font-size:11px;color:var(--text-muted);padding:2px 0 4px 0;word-break:break-all"></div>
+                <div class="stat-row"><span>Uptime</span><span id="detail-uptime" class="mono">—</span></div>
                 <div class="stat-row"><span>RAM</span><span id="detail-ram" class="mono">—</span></div>
                 <div class="stat-row"><span>Storage</span><span id="detail-storage" class="mono">—</span></div>
               </div>
@@ -192,10 +199,16 @@
           <h1>Profiles</h1>
           <p class="page-subtitle">Server presets & configurations</p>
         </div>
-        <button class="btn-primary" onclick="openCreateProfileModal()">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
-          New Profile
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn-ghost" onclick="openImportProfileModal()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Import
+          </button>
+          <button class="btn-primary" onclick="openCreateProfileModal()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            New Profile
+          </button>
+        </div>
       </div>
       <div class="profiles-info">
         <div class="info-box">
@@ -413,7 +426,7 @@
 <div class="modal-overlay hidden" id="modal-download">
   <div class="modal small">
     <div class="modal-header">
-      <h2>Creating Server</h2>
+      <h2 id="modal-download-title">Creating Server</h2>
     </div>
     <div class="modal-body">
       <div class="download-status" id="download-status-text">Initializing...</div>
@@ -459,6 +472,138 @@
     <div class="modal-footer">
       <button class="btn-ghost" onclick="closeEulaModal()">Cancel</button>
       <button class="btn-primary" onclick="confirmEula()">Accept &amp; Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Profile Modal -->
+<div class="modal-overlay hidden" id="modal-import-profile">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Import Profile</h2>
+      <button class="modal-close" onclick="closeModal('modal-import-profile')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Profile Folder</label>
+          <div class="input-row">
+            <input type="text" id="ip-folder-path" class="input" placeholder="No folder selected" readonly>
+            <button class="btn-sm" onclick="browseImportProfileFolder()">Browse</button>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label>Profile Name</label>
+          <input type="text" id="ip-name" class="input" placeholder="My Profile">
+        </div>
+        <div class="form-group full">
+          <label>Description <span class="label-hint">(optional)</span></label>
+          <input type="text" id="ip-desc" class="input" placeholder="">
+        </div>
+        <div class="form-group full">
+          <label>Restrict to Software <span class="label-hint">(optional — leave empty for any)</span></label>
+          <div class="checkbox-group" id="ip-software-checks">
+            <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
+            <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
+            <label class="checkbox-item"><input type="checkbox" value="leaf"> Leaf</label>
+            <label class="checkbox-item"><input type="checkbox" value="vanilla"> Vanilla</label>
+            <label class="checkbox-item"><input type="checkbox" value="fabric"> Fabric</label>
+            <label class="checkbox-item"><input type="checkbox" value="velocity"> Velocity</label>
+            <label class="checkbox-item"><input type="checkbox" value="spigot"> Spigot</label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label>Restrict to Versions <span class="label-hint">(optional — comma separated)</span></label>
+          <input type="text" id="ip-versions" class="input" placeholder="Leave empty for any version">
+        </div>
+      </div>
+      <div class="info-box" style="margin-top:12px">
+        Files from the selected folder will be copied into a new profile. If the folder contains a <code style="font-family:var(--font-mono);font-size:11px">profile.json</code>, its name and description will be pre-filled automatically.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-import-profile')">Cancel</button>
+      <button class="btn-primary" onclick="importProfile()" id="ip-submit">Import Profile</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Server Modal -->
+<div class="modal-overlay hidden" id="modal-import-server">
+  <div class="modal large">
+    <div class="modal-header">
+      <h2>Import Server</h2>
+      <button class="modal-close" onclick="closeModal('modal-import-server')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Server Folder</label>
+          <div class="input-row">
+            <input type="text" id="is-folder-path" class="input" placeholder="No folder selected" readonly>
+            <button class="btn-sm" onclick="browseImportServerFolder()">Browse</button>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label>Server Name</label>
+          <input type="text" id="is-name" class="input" placeholder="My Imported Server">
+        </div>
+        <div class="form-group">
+          <label>Software</label>
+          <select id="is-software" class="input">
+            <option value="paper">Paper</option>
+            <option value="purpur">Purpur</option>
+            <option value="leaf">Leaf</option>
+            <option value="vanilla">Vanilla</option>
+            <option value="fabric">Fabric</option>
+            <option value="velocity">Velocity</option>
+            <option value="spigot">Spigot</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Version</label>
+          <input type="text" id="is-version" class="input" placeholder="e.g. 1.21.4">
+        </div>
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" id="is-port" class="input" value="25565">
+        </div>
+        <div class="form-group">
+          <label>RAM Allocation</label>
+          <select id="is-ram" class="input">
+            <option value="512M">512 MB</option>
+            <option value="1G">1 GB</option>
+            <option value="2G" selected>2 GB</option>
+            <option value="4G">4 GB</option>
+            <option value="6G">6 GB</option>
+            <option value="8G">8 GB</option>
+            <option value="12G">12 GB</option>
+            <option value="16G">16 GB</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label>Java Executable</label>
+          <div class="input-row">
+            <input type="text" id="is-java" class="input" placeholder="java" value="java">
+            <button class="btn-sm" onclick="browseJavaImport()">Browse</button>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label>Java Arguments</label>
+          <input type="text" id="is-java-args" class="input" value="-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200">
+        </div>
+      </div>
+      <div class="info-box" style="margin-top:12px">
+        The selected folder's contents will be copied into MCPanel's servers directory. Port and software type are auto-detected from <code style="font-family:var(--font-mono);font-size:11px">server.properties</code> when you browse.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-import-server')">Cancel</button>
+      <button class="btn-primary" onclick="importServer()" id="is-submit">Import Server</button>
     </div>
   </div>
 </div>
