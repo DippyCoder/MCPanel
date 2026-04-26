@@ -207,6 +207,15 @@ body {
 .sidebar-server-item:hover .srv-quick-btn { opacity: 1; }
 .srv-quick-btn:hover { background: var(--accent-dim); color: var(--accent); }
 
+.sidebar-footer {
+  padding: 10px 14px;
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
 /* ── Main ─────────────────────────────────────────── */
 .main { flex: 1; overflow-y: auto; background: var(--bg-base); }
 
