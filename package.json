@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.dippycoder.mcpanel",
     "productName": "MCPanel",
-    "icon": "src/assets/icon.png",
+    "icon": "build/icon",
     "directories": { "output": "dist" },
     "files": ["main.js", "preload.js", "backend/**/*", "src/**/*", "node_modules/**/*"],
     "win": { "target": "nsis" },
