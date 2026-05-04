@@ -52,9 +52,21 @@ contextBridge.exposeInMainWorld('mcpanel', {
   importProfile: (data) => ipcRenderer.invoke('import-profile', data),
   importServer: (data) => ipcRenderer.invoke('import-server', data),
 
+  // App info
+  getVersion: () => ipcRenderer.invoke('get-version'),
+
   // Updates
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
+  // Themes
+  getThemes: () => ipcRenderer.invoke('get-themes'),
+  getThemeCss: (id) => ipcRenderer.invoke('get-theme-css', id),
+  installThemeUrl: (url) => ipcRenderer.invoke('install-theme-url', url),
+  installThemeFile: (filePath) => ipcRenderer.invoke('install-theme-file', filePath),
+  browseThemeFile: () => ipcRenderer.invoke('browse-theme-file'),
+  deleteTheme: (id) => ipcRenderer.invoke('delete-theme', id),
+  fetchGithubThemes: () => ipcRenderer.invoke('fetch-github-themes'),
 
   // Window controls
   minimize: () => ipcRenderer.send('window-minimize'),

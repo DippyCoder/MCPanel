@@ -10,9 +10,10 @@ const http = require('http');
 const USER_DATA = app.getPath('userData');
 const SERVERS_DIR = path.join(USER_DATA, 'servers');
 const PROFILES_DIR = path.join(USER_DATA, 'profiles');
+const THEMES_DIR = path.join(USER_DATA, 'themes');
 const CONFIG_FILE = path.join(USER_DATA, 'config.json');
 
-[SERVERS_DIR, PROFILES_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+[SERVERS_DIR, PROFILES_DIR, THEMES_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
 // ─── Running server processes ─────────────────────────────────────────────────
 const runningServers = {}; // id -> { process, log: [] }
@@ -20,7 +21,7 @@ const runningServers = {}; // id -> { process, log: [] }
 // ─── Config helpers ───────────────────────────────────────────────────────────
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
-  catch { return { servers: [], jdkPaths: [] }; }
+  catch { return { servers: [], jdkPaths: [], activeTheme: null }; }
 }
 function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
@@ -693,6 +694,8 @@ ipcMain.handle('check-update', async () => {
   }
 });
 
+ipcMain.handle('get-version', () => app.getVersion());
+
 ipcMain.handle('open-external', (_, url) => {
   shell.openExternal(url);
 });
@@ -786,6 +789,132 @@ ipcMain.handle('import-server', async (event, { folderPath, name, port, ram, sof
   }
 });
 
+// ─── Themes ──────────────────────────────────────────────────────────────────
+
+function findThemeJson(dir) {
+  const root = path.join(dir, 'theme.json');
+  if (fs.existsSync(root)) return root;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      const nested = path.join(dir, entry.name, 'theme.json');
+      if (fs.existsSync(nested)) return nested;
+    }
+  }
+  return null;
+}
+
+async function installThemeFromZip(zipPath) {
+  const extract = require('extract-zip');
+  const id = 'theme_' + Date.now();
+  const tempDir = path.join(THEMES_DIR, '_tmp_' + id);
+  const themeDir = path.join(THEMES_DIR, id);
+
+  try {
+    fs.mkdirSync(tempDir, { recursive: true });
+    await extract(zipPath, { dir: tempDir });
+
+    const metaPath = findThemeJson(tempDir);
+    if (!metaPath) throw new Error('theme.json not found in archive');
+
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (!meta.name) throw new Error('theme.json must include a "name" field');
+
+    const themeRoot = path.dirname(metaPath);
+    fs.mkdirSync(themeDir, { recursive: true });
+    copyDirSync(themeRoot, themeDir);
+    // Also copy theme.json (copyDirSync skips profile.json, not theme.json, but be explicit)
+    fs.copyFileSync(metaPath, path.join(themeDir, 'theme.json'));
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    return { success: true, theme: { ...meta, id, dir: themeDir } };
+  } catch (e) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(themeDir, { recursive: true, force: true }); } catch {}
+    throw e;
+  }
+}
+
+ipcMain.handle('get-themes', () => {
+  const themes = [];
+  try {
+    for (const dir of fs.readdirSync(THEMES_DIR)) {
+      if (dir.startsWith('_tmp_')) continue;
+      const metaFile = path.join(THEMES_DIR, dir, 'theme.json');
+      if (fs.existsSync(metaFile)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+          themes.push({ ...meta, id: dir, dir: path.join(THEMES_DIR, dir) });
+        } catch {}
+      }
+    }
+  } catch {}
+  return themes;
+});
+
+ipcMain.handle('get-theme-css', (_, id) => {
+  if (!id) return null;
+  const cssFile = path.join(THEMES_DIR, id, 'theme.css');
+  if (!fs.existsSync(cssFile)) return null;
+  let css = fs.readFileSync(cssFile, 'utf8');
+  // Rewrite relative URLs (e.g. fonts/) to absolute file:// paths
+  const themeDir = path.join(THEMES_DIR, id).replace(/\\/g, '/');
+  css = css.replace(/url\(\s*['"]?(?!https?:|data:|file:)([^'")\s]+)['"]?\s*\)/g, (_, rel) => {
+    return `url('file:///${themeDir}/${rel}')`;
+  });
+  return css;
+});
+
+ipcMain.handle('install-theme-url', async (_, url) => {
+  const tmpZip = path.join(THEMES_DIR, '_download_' + Date.now() + '.zip');
+  try {
+    await downloadFile(url, tmpZip, () => {});
+    const result = await installThemeFromZip(tmpZip);
+    fs.unlinkSync(tmpZip);
+    return result;
+  } catch (e) {
+    try { fs.unlinkSync(tmpZip); } catch {}
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle('install-theme-file', async (_, filePath) => {
+  try {
+    return await installThemeFromZip(filePath);
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle('browse-theme-file', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Select Theme ZIP',
+    filters: [{ name: 'Theme Archive', extensions: ['zip'] }],
+    properties: ['openFile'],
+  });
+  if (!result.canceled && result.filePaths.length > 0) return result.filePaths[0];
+  return null;
+});
+
+ipcMain.handle('delete-theme', (_, id) => {
+  try {
+    const themeDir = path.join(THEMES_DIR, id);
+    if (fs.existsSync(themeDir)) fs.rmSync(themeDir, { recursive: true, force: true });
+    return { success: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle('fetch-github-themes', async () => {
+  try {
+    const raw = await fetchText('https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/themes-index.json');
+    const data = JSON.parse(raw);
+    return { themes: data.themes || [] };
+  } catch (e) {
+    return { themes: [], error: e.message };
+  }
+});
+
 // ─── Window ───────────────────────────────────────────────────────────────────
 let mainWindow;
 
@@ -817,7 +946,23 @@ function createWindow() {
   ipcMain.on('window-close', () => mainWindow.close());
 }
 
-app.whenReady().then(createWindow);
+function installBundledThemes() {
+  const bundledDir = path.join(__dirname, 'src', 'themes');
+  if (!fs.existsSync(bundledDir)) return;
+  for (const name of fs.readdirSync(bundledDir)) {
+    const src = path.join(bundledDir, name);
+    const dest = path.join(THEMES_DIR, name);
+    if (fs.statSync(src).isDirectory() && !fs.existsSync(dest)) {
+      fs.mkdirSync(dest, { recursive: true });
+      copyDirSync(src, dest);
+    }
+  }
+}
+
+app.whenReady().then(() => {
+  installBundledThemes();
+  createWindow();
+});
 app.on('window-all-closed', () => {
   // Kill all running servers
   Object.values(runningServers).forEach(s => {

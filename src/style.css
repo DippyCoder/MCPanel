@@ -708,3 +708,55 @@ body {
 
 /* ── Misc ─────────────────────────────────────────── */
 select option { background: #1a1a2a; }
+
+/* ── Themes ───────────────────────────────────────────── */
+.active-theme-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  font-size: 12px;
+}
+.active-theme-label { color: var(--text-muted); }
+.active-theme-name { color: var(--accent); font-weight: 600; flex: 1; }
+
+.installed-theme-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: var(--radius);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  margin-bottom: 8px; transition: border-color .15s;
+}
+.installed-theme-item:hover { border-color: rgba(168,85,247,0.2); }
+.installed-theme-item.active-theme { border-color: var(--accent); }
+
+.theme-item-info { flex: 1; min-width: 0; }
+.theme-item-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.theme-item-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.theme-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.theme-browser-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.theme-browser-card {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 16px 18px;
+  transition: all .2s;
+}
+.theme-browser-card:hover { border-color: rgba(168,85,247,0.25); transform: translateY(-1px); }
+.theme-browser-card-name { font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 3px; }
+.theme-browser-card-by { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+.theme-browser-card-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; line-height: 1.5; }
+.theme-browser-card-footer { display: flex; align-items: center; justify-content: space-between; }
+.theme-version-tag {
+  font-size: 10px; font-family: var(--font-mono);
+  padding: 2px 7px; border-radius: 20px;
+  background: var(--accent-dim); color: var(--purple-300);
+  border: 1px solid rgba(168,85,247,0.2);
+}
+.theme-browser-empty {
+  text-align: center; padding: 48px 24px; color: var(--text-muted);
+}
+.theme-browser-empty svg { margin-bottom: 12px; opacity: 0.4; }
+.theme-browser-empty p { font-size: 13px; }

@@ -17,6 +17,25 @@ let pendingEulaServerId = null;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   config = await window.mcpanel.getConfig();
+
+  // Apply saved theme before rendering UI to avoid flash
+  if (config.activeTheme) {
+    await loadAndApplyTheme(config.activeTheme);
+    const themes = await window.mcpanel.getThemes();
+    const theme = themes.find(t => t.id === config.activeTheme);
+    if (theme) {
+      document.getElementById('active-theme-name').textContent = theme.name;
+      document.getElementById('reset-theme-btn').style.display = '';
+    } else {
+      config.activeTheme = null;
+    }
+  }
+
+  window.mcpanel.getVersion().then(v => {
+    const el = document.getElementById('about-version');
+    if (el) el.textContent = `MCPanel v${v} · Built for Minecraft server management`;
+  });
+
   profiles = await window.mcpanel.getProfiles();
   renderServersGrid();
   renderSidebarServers();
@@ -63,6 +82,7 @@ function showPage(page) {
 
   if (page === 'profiles') renderProfilesGrid();
   if (page === 'servers') renderServersGrid();
+  if (page === 'settings') renderInstalledThemes();
 }
 
 function openServerDetail(id) {
@@ -1052,6 +1072,177 @@ function formatBytes(bytes) {
   const sizes = ['B','KB','MB','GB','TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// ─── Themes ───────────────────────────────────────────────────────────────────
+let installedThemes = [];
+
+async function loadAndApplyTheme(id) {
+  const styleEl = document.getElementById('theme-override');
+  if (!id) {
+    styleEl.textContent = '';
+    return;
+  }
+  const css = await window.mcpanel.getThemeCss(id);
+  styleEl.textContent = css || '';
+}
+
+async function applyTheme(id) {
+  await loadAndApplyTheme(id);
+  config.activeTheme = id;
+  await window.mcpanel.saveConfig(config);
+  const theme = installedThemes.find(t => t.id === id);
+  document.getElementById('active-theme-name').textContent = theme ? theme.name : id;
+  document.getElementById('reset-theme-btn').style.display = '';
+  renderInstalledThemes();
+  toast(`Theme "${theme?.name || id}" applied`, 'success');
+}
+
+async function resetTheme() {
+  await loadAndApplyTheme(null);
+  config.activeTheme = null;
+  await window.mcpanel.saveConfig(config);
+  document.getElementById('active-theme-name').textContent = 'Default (Purple Dark)';
+  document.getElementById('reset-theme-btn').style.display = 'none';
+  renderInstalledThemes();
+  toast('Theme reset to default', 'info');
+}
+
+async function renderInstalledThemes() {
+  installedThemes = await window.mcpanel.getThemes();
+  const container = document.getElementById('installed-themes-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (installedThemes.length === 0) {
+    container.innerHTML = `<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No themes installed. Browse online or import a ZIP.</div>`;
+    return;
+  }
+
+  installedThemes.forEach(theme => {
+    const isActive = config.activeTheme === theme.id;
+    const item = document.createElement('div');
+    item.className = `installed-theme-item${isActive ? ' active-theme' : ''}`;
+
+    const creatorHtml = theme.creatorUrl
+      ? `<a href="#" onclick="window.mcpanel.openExternal('${escapeHtml(theme.creatorUrl)}');return false" style="color:var(--accent)">${escapeHtml(theme.creator || 'Unknown')}</a>`
+      : escapeHtml(theme.creator || 'Unknown');
+
+    item.innerHTML = `
+      <div class="theme-item-info">
+        <div class="theme-item-name">${escapeHtml(theme.name)}${isActive ? ' <span style="font-size:10px;color:var(--accent);font-weight:400">(active)</span>' : ''}</div>
+        <div class="theme-item-meta">by ${creatorHtml} · v${escapeHtml(theme.version || '?')} · for MCPanel ${escapeHtml(theme.appVersion || '?')}</div>
+        ${theme.description ? `<div class="theme-item-meta" style="margin-top:2px">${escapeHtml(theme.description)}</div>` : ''}
+      </div>
+      <div class="theme-item-actions">
+        ${!isActive ? `<button class="btn-xs" style="color:var(--accent);border-color:rgba(168,85,247,0.3)" onclick="applyTheme('${theme.id}')">Apply</button>` : ''}
+        <button class="btn-xs" style="color:var(--red);border-color:rgba(239,68,68,0.25)" onclick="confirmDeleteTheme('${theme.id}')">Delete</button>
+      </div>
+    `;
+    container.appendChild(item);
+  });
+}
+
+async function confirmDeleteTheme(id) {
+  const theme = installedThemes.find(t => t.id === id);
+  if (!confirm(`Delete theme "${theme?.name || id}"? This cannot be undone.`)) return;
+  const r = await window.mcpanel.deleteTheme(id);
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  if (config.activeTheme === id) await resetTheme();
+  await renderInstalledThemes();
+  toast('Theme deleted', 'info');
+}
+
+async function importThemeFromFile() {
+  const filePath = await window.mcpanel.browseThemeFile();
+  if (!filePath) return;
+  toast('Installing theme…', 'info');
+  const r = await window.mcpanel.installThemeFile(filePath);
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  await renderInstalledThemes();
+  toast(`Theme "${r.theme.name}" installed!`, 'success');
+}
+
+function openThemeUrlModal() {
+  document.getElementById('theme-url-input').value = '';
+  openModal('modal-theme-url');
+}
+
+async function installThemeFromUrl() {
+  const url = document.getElementById('theme-url-input').value.trim();
+  if (!url) { toast('Please enter a URL', 'error'); return; }
+
+  const btn = document.getElementById('theme-url-submit');
+  btn.disabled = true; btn.textContent = 'Installing…';
+
+  const r = await window.mcpanel.installThemeUrl(url);
+
+  btn.disabled = false; btn.textContent = 'Install';
+
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  closeModal('modal-theme-url');
+  await renderInstalledThemes();
+  toast(`Theme "${r.theme.name}" installed!`, 'success');
+}
+
+async function openThemeBrowser() {
+  openModal('modal-theme-browser');
+  const content = document.getElementById('theme-browser-content');
+  content.innerHTML = `<div style="text-align:center;padding:40px 0;color:var(--text-muted)">Fetching themes from GitHub…</div>`;
+
+  const r = await window.mcpanel.fetchGithubThemes();
+
+  if (!r.themes || r.themes.length === 0) {
+    content.innerHTML = `
+      <div class="theme-browser-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <p>No online themes available yet.</p>
+        <p style="margin-top:6px;font-size:11px">Import a local ZIP or install from a direct URL instead.</p>
+      </div>`;
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'theme-browser-grid';
+
+  r.themes.forEach(theme => {
+    const card = document.createElement('div');
+    card.className = 'theme-browser-card';
+
+    const creatorHtml = theme.creatorUrl
+      ? `<a href="#" onclick="window.mcpanel.openExternal('${escapeHtml(theme.creatorUrl)}');return false" style="color:var(--accent)">${escapeHtml(theme.creator || 'Unknown')}</a>`
+      : escapeHtml(theme.creator || 'Unknown');
+
+    card.innerHTML = `
+      <div class="theme-browser-card-name">${escapeHtml(theme.name)}</div>
+      <div class="theme-browser-card-by">by ${creatorHtml}</div>
+      <div class="theme-browser-card-desc">${escapeHtml(theme.description || '')}</div>
+      <div class="theme-browser-card-footer">
+        <span class="theme-version-tag">v${escapeHtml(theme.version || '?')} · MCPanel ${escapeHtml(theme.appVersion || '?')}</span>
+        <button class="btn-sm" onclick="installOnlineTheme('${escapeHtml(theme.downloadUrl)}', this)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Install
+        </button>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  content.innerHTML = '';
+  content.appendChild(grid);
+}
+
+async function installOnlineTheme(url, btn) {
+  btn.disabled = true; btn.textContent = 'Installing…';
+  const r = await window.mcpanel.installThemeUrl(url);
+  if (r.error) {
+    btn.disabled = false; btn.textContent = 'Install';
+    toast('Error: ' + r.error, 'error');
+    return;
+  }
+  btn.textContent = 'Installed';
+  await renderInstalledThemes();
+  toast(`Theme "${r.theme.name}" installed!`, 'success');
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────

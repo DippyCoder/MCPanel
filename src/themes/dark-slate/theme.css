@@ -1,0 +1,151 @@
+/* ═══════════════════════════════════════════════════════
+   Dark Slate — MCPanel Theme
+   Author: DippyCoder
+   A neutral dark theme with blue accents, no purple.
+   ═══════════════════════════════════════════════════════ */
+
+:root {
+  --bg-base:      #0d0d0d;
+  --bg-surface:   #141414;
+  --bg-elevated:  #1c1c1c;
+  --bg-card:      #16161680;
+  --bg-hover:     #222222;
+
+  /* Replace all purple-* vars with blue equivalents */
+  --purple-900:   #0f172a;
+  --purple-800:   #1e3a5f;
+  --purple-700:   #1d4ed8;
+  --purple-600:   #2563eb;
+  --purple-500:   #3b82f6;
+  --purple-400:   #60a5fa;
+  --purple-300:   #93c5fd;
+  --purple-200:   #bfdbfe;
+  --purple-100:   #dbeafe;
+
+  --accent:       #60a5fa;
+  --accent-glow:  rgba(96, 165, 250, 0.25);
+  --accent-dim:   rgba(96, 165, 250, 0.1);
+
+  --text-primary:   #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted:     #475569;
+  --text-accent:    #93c5fd;
+
+  --border:       rgba(255, 255, 255, 0.07);
+  --border-focus: rgba(96, 165, 250, 0.5);
+
+  --shadow-purple: 0 4px 24px rgba(96, 165, 250, 0.15);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar-thumb { background: rgba(96, 165, 250, 0.25); }
+::-webkit-scrollbar-thumb:hover { background: rgba(96, 165, 250, 0.45); }
+
+/* Titlebar logo */
+.titlebar-logo { color: var(--text-accent); }
+.titlebar-logo svg rect { fill: var(--accent) !important; }
+
+/* Page heading gradient */
+.page-header h1 {
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Active nav item */
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--text-accent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.sidebar-server-item.active { color: var(--text-accent); }
+
+/* Server card hover */
+.server-card::before {
+  background: linear-gradient(90deg, #1d4ed8, var(--accent));
+}
+.server-card:hover {
+  border-color: rgba(96, 165, 250, 0.3);
+  box-shadow: var(--shadow-purple);
+}
+
+/* Profile card */
+.profile-card::after {
+  background: linear-gradient(180deg, #2563eb, var(--accent));
+}
+.profile-card:hover {
+  border-color: rgba(96, 165, 250, 0.3);
+  box-shadow: var(--shadow-purple);
+}
+
+/* Buttons */
+.btn-primary {
+  background: linear-gradient(135deg, #1d4ed8, var(--accent));
+  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
+}
+.btn-primary:hover { box-shadow: 0 6px 20px rgba(37, 99, 235, 0.55); }
+
+.btn-ghost:hover {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: var(--accent-dim);
+}
+.btn-sm:hover { border-color: rgba(96, 165, 250, 0.4); }
+.btn-xs:hover { border-color: rgba(96, 165, 250, 0.4); }
+.btn-ghost-sm:hover { border-color: var(--border-focus); }
+
+/* Quick ctrl buttons */
+.quick-ctrl-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.srv-quick-btn:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Console */
+.console-prompt { color: var(--accent); }
+.btn-send {
+  background: var(--accent-dim);
+  border-color: rgba(96, 165, 250, 0.3);
+  color: var(--accent);
+}
+.btn-send:hover { background: var(--accent); color: #fff; }
+
+/* Progress bar */
+.progress-bar-fill {
+  background: linear-gradient(90deg, #1d4ed8, var(--accent));
+}
+.progress-percent { color: var(--text-accent); }
+
+/* Checkbox */
+.checkbox-item:hover { border-color: rgba(96, 165, 250, 0.35); }
+.checkbox-item input[type=checkbox] { accent-color: var(--accent); }
+
+/* Info box */
+.info-box {
+  background: rgba(96, 165, 250, 0.08);
+  border-color: rgba(96, 165, 250, 0.2);
+  color: var(--purple-200);
+}
+
+/* Modal */
+.modal {
+  border-color: rgba(96, 165, 250, 0.2);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.85),
+              0 0 0 1px rgba(96, 165, 250, 0.08);
+}
+
+/* Toast */
+.toast.info {
+  background: rgba(23, 37, 84, 0.92);
+  border-color: rgba(96, 165, 250, 0.3);
+  color: var(--purple-200);
+}
+
+/* Field hints */
+.field-hint { color: var(--text-accent); }
+
+/* JDK version label */
+.jdk-version { color: var(--text-accent); }
