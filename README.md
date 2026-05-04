@@ -34,7 +34,11 @@ An open-source Minecraft-Panel built in Electron.
 - **Java configuration** — Per-server JDK path and Java arguments
 - **Status overview** — Online/offline badge, player count, port on the server cards
 - **Storage tracking** — Tracks server folder size, optional storage limits
-- **Purple dark theme** — Clean, modern UI with animations
+- **Theme system** — Install, browse, and swap themes without restarting
+  - Browse community themes online and install in one click
+  - Import any theme as a `.zip` or from a direct URL
+  - Ships with **Dark Slate** (neutral dark, blue accents) and **Bright Slate** (light, blue accents)
+  - Create your own themes with a simple `theme.json` + `theme.css` — see the [themes branch](https://github.com/DippyCoder/MCPanel/tree/themes)
 
 ---
 
@@ -123,6 +127,29 @@ Recommended Java arguments for large servers:
 ```
 -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4
 ```
+
+---
+
+## 🎨 Themes
+
+Themes let you reskin MCPanel without touching the source. Install them from inside the app:
+
+**Browse online**
+1. Open **Settings** → **Themes** → **Browse Online**
+2. Pick a theme and click **Install**
+3. Click **Apply** — takes effect immediately
+
+**Import a ZIP**
+1. Download a `.zip` theme file
+2. **Settings** → **Themes** → **Import ZIP**
+
+**Install from URL**
+1. **Settings** → **Themes** → **Install from URL**
+2. Paste a direct link to a `.zip`
+
+To go back to the default look, click **Reset to Default**.
+
+Community themes and authoring docs live on the [`themes` branch](https://github.com/DippyCoder/MCPanel/tree/themes).
 
 ---
 
