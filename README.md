@@ -8,139 +8,137 @@
 [![Source](https://img.shields.io/badge/source-code?label=source&style=for-the-badge&colorA=19201a&colorB=7B2FBE)](https://github.com/DippyCoder/MCPanel)
 [![Discord](https://img.shields.io/badge/discord-join-blue?style=for-the-badge&colorA=19201a&colorB=7B2FBE)](https://discord.gg/xe5BPEd6JA)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge&colorA=19201a&colorB=7B2FBE)](LICENSE)
+
 </div>
 
-An open-source Minecraft-Panel built in Electron. 
+This branch hosts community themes for **MCPanel**. Each folder is a self-contained theme — a `theme.json` metadata file and a `theme.css` stylesheet.
 
 ---
 
-## ✨ Features
+## 🎨 Installing a Theme
 
-- **Multi-server management** — Run and manage multiple Minecraft servers simultaneously
-- **Auto version fetching** — Live version lists from official APIs for:
-  - Paper, Purpur, Leaf (PaperMC API)
-  - Vanilla (Mojang launcher manifest)
-  - Fabric (FabricMC meta API)
-  - Velocity (PaperMC API)
-  - Spigot (manual jar, BuildTools required)
-- **Profiles** — Server presets with files, plugins, configs
-  - Create a profile, add any files (plugins/, config/, etc.)
-  - Restrict profiles to specific software or versions
-  - Files are copied to the server on creation
-- **Live Console** — Real-time server output with command input and history (↑↓)
-- **Server Controls** — Start, Stop, Restart, Kill
-- **Smart JAR detection** — Auto-uses the only `.jar` in the server folder if `server.jar` doesn't exist
-- **Quick port change** — Change port from the UI, auto-updates `server.properties`
-- **Java configuration** — Per-server JDK path and Java arguments
-- **Status overview** — Online/offline badge, player count, port on the server cards
-- **Storage tracking** — Tracks server folder size, optional storage limits
-- **Purple dark theme** — Clean, modern UI with animations
+Themes can be installed directly from inside MCPanel:
+
+**Option A — Browse online (recommended)**
+1. Open MCPanel → **Settings** → scroll to **Themes**
+2. Click **Browse Online** — MCPanel fetches the theme list from this branch
+3. Click **Install** on any theme you like
+
+**Option B — Import a ZIP**
+1. Download the `.zip` for a theme from this branch (or anywhere else)
+2. Open MCPanel → **Settings** → **Themes** → **Import ZIP**
+3. Select the downloaded file — the theme is installed instantly
+
+**Option C — Import from URL**
+1. Open MCPanel → **Settings** → **Themes** → **Install from URL**
+2. Paste a direct link to a `.zip` file and confirm
+
+Once installed, click **Apply** next to the theme. To go back to the default purple-dark look, click **Reset to Default**.
 
 ---
 
-## 🚀 Quick Start
+## 🛠️ Creating a Theme
 
-### Dependencies
-- [Node.js](https://nodejs.org) v18 or higher
-- Java (for running Minecraft servers)
+A theme is just a folder with two files:
 
-### Run from source
-
-**Windows:**
 ```
-double-click start.bat        ← opens console window with output
-double-click start.exe        ← silent launch, no console window
+my-theme/
+├── theme.json   ← metadata
+└── theme.css    ← CSS overrides
 ```
 
-**macOS / Linux:**
+### theme.json
+
+```json
+{
+  "name": "My Theme",
+  "creator": "YourName",
+  "creatorUrl": "https://github.com/YourName",
+  "version": "1.0.0",
+  "appVersion": "1.0.3",
+  "description": "A short description of your theme."
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `name` | yes | Display name shown in MCPanel |
+| `creator` | yes | Your name or handle |
+| `creatorUrl` | no | Clickable link next to your name |
+| `version` | yes | Theme version (semver) |
+| `appVersion` | yes | MCPanel version this targets |
+| `description` | no | Short description shown in the browser |
+
+### theme.css
+
+Override CSS variables and component styles. MCPanel's entire UI is built on a set of CSS custom properties — you only need to include the ones you want to change.
+
+**Core variables:**
+
+```css
+:root {
+  /* Backgrounds */
+  --bg-base:      #0d0d0d;   /* app background */
+  --bg-surface:   #141414;   /* panels, sidebar */
+  --bg-elevated:  #1c1c1c;   /* inputs, buttons */
+  --bg-card:      #16161680; /* server/profile cards */
+  --bg-hover:     #222222;   /* hover state */
+
+  /* Accent palette (maps to purple-* internally) */
+  --purple-900: …;  /* darkest shade */
+  --purple-800: …;
+  --purple-700: …;
+  --purple-600: …;
+  --purple-500: …;  /* mid accent */
+  --purple-400: …;
+  --purple-300: …;
+  --purple-200: …;
+  --purple-100: …;  /* lightest shade */
+
+  /* Shorthand accent tokens */
+  --accent:       #60a5fa;               /* primary accent color */
+  --accent-glow:  rgba(96,165,250,0.25); /* glow effects */
+  --accent-dim:   rgba(96,165,250,0.10); /* subtle accent fills */
+
+  /* Text */
+  --text-primary:   #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted:     #475569;
+  --text-accent:    #93c5fd;
+
+  /* Borders */
+  --border:       rgba(255,255,255,0.07);
+  --border-focus: rgba(96,165,250,0.5);
+
+  /* Shadows */
+  --shadow-purple: 0 4px 24px rgba(96,165,250,0.15);
+}
+```
+
+You can also target specific components directly — see the bundled themes for examples.
+
+---
+
+## 📤 Packing a Theme
+
+Use the included script to produce a `.zip` ready to share or import:
+
 ```bash
-chmod +x start.sh
-./start.sh
+node tools/pack-theme.js src/themes/my-theme
 ```
 
-**Manual:**
-```bash
-npm install
-npm start
-```
-
-### Build as executable
-
-**Windows** — double-click `build.bat` (run as Administrator) or:
-```
-build.bat win       # Windows installer  →  dist/win
-build.bat mac       # macOS disk image   →  dist/mac
-build.bat appimage  # Linux AppImage     →  dist/linux
-build.bat deb       # Linux .deb         →  dist/linux
-build.bat rpm       # Linux .rpm         →  dist/linux
-build.bat all       # all platforms
-build.bat clean     # clear dist folder
-```
-
-**macOS / Linux** — same options via `./build.sh [target]`
-
-Output files:
-```
-dist/
-├── win/     ← MCPanel Setup x.x.x.exe
-├── mac/     ← MCPanel-x.x.x.dmg
-└── linux/   ← MCPanel-x.x.x.AppImage / .deb / .rpm
-```
+This outputs `my-theme.zip` in the project root.
 
 ---
 
-## 📦 Using Profiles
+## 🤝 Submitting a Theme
 
-1. Go to **Profiles** → **New Profile**
-2. Enter a name and optionally restrict to specific software/versions
-3. Click **Open Folder** — this opens the profile's directory
-4. Add any files you want (e.g. `plugins/EssentialsX.jar`, `config/`, `server.properties`)
-5. When creating a server, select your profile — all files will be copied over
-
-**Profile folder example:**
+1. Compress your Theme using the steps in `## 🤝 Submitting a Theme`
+2. Open a new GitHub Issue with the name:
 ```
-profiles/profile_1234567890/
-├── profile.json          ← metadata (don't delete)
-├── plugins/
-│   ├── EssentialsX.jar
-│   └── LuckPerms.jar
-├── config/
-│   └── essentials/
-└── server.properties     ← custom server properties
+Add new Theme - My Theme
 ```
+3. Attatch your .zip file to the Issue.
+4. Wait until someone reviewed it and added it.
 
----
-
-## ⚙️ Java Configuration
-
-Each server has its own Java path and arguments:
-- **Java Path**: full path to `java.exe` or `java`, or just `java` if it's in PATH
-- **Java Args**: JVM flags (default includes G1GC tuning for good performance)
-
-Use **Settings → Scan for Java** to auto-detect installed JDKs.
-
-Recommended Java arguments for large servers:
-```
--XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4
-```
-
----
-
-## 🔧 Notes
-
-- **Spigot**: Requires manual compilation via [BuildTools](https://www.spigotmc.org/wiki/buildtools/). MCPanel creates the server folder but won't download the JAR automatically.
-- **Fabric**: Downloads the server-side loader JAR directly from FabricMC
-- **EULA**: `eula.txt` is automatically set to `true` on server creation
-- Servers data is stored in your OS user data directory and persists across app updates
-
----
-
-## 🏗️ Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Desktop shell | Electron |
-| Backend | Node.js (main process) |
-| Frontend | Vanilla HTML/CSS/JS |
-| Fonts | Syne (display) + JetBrains Mono |
-| Build | electron-builder |
+Please keep themes tasteful and working — test against the latest MCPanel release before submitting.
