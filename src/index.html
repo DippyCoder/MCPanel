@@ -55,7 +55,9 @@
       </button>
     </div>
     <div class="sidebar-servers" id="sidebar-servers"></div>
-    <div class="sidebar-footer">Copyright DippyCoder 2026<br>GPL-3.0</div>
+    <div class="sidebar-footer">
+      <a href="#" onclick="window.mcpanel.openExternal('https://github.com/DippyCoder/MCPanel');return false" class="footer-link">Copyright DippyCoder 2026</a><br>GPL-3.0
+    </div>
   </nav>
 
   <!-- Main Content -->
@@ -118,6 +120,11 @@
               <button class="btn-ghost-sm" onclick="clearConsole()">Clear</button>
             </div>
             <div class="console-output" id="console-output"></div>
+            <div class="autoscroll-banner hidden" id="autoscroll-banner">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+              Autoscroll paused
+              <button class="autoscroll-resume-btn" onclick="resumeAutoscroll()">Jump to bottom</button>
+            </div>
             <div class="console-input-row">
               <span class="console-prompt">&gt;</span>
               <input type="text" class="console-input" id="console-input" placeholder="Enter command..." onkeydown="handleConsoleKey(event)">
@@ -157,6 +164,10 @@
                 </div>
               </div>
               <div class="setting-row">
+                <label>Group</label>
+                <input type="text" class="input-sm full" id="quick-group" placeholder="e.g. Survival, Testing">
+              </div>
+              <div class="setting-row">
                 <label>Java Args</label>
                 <input type="text" class="input-sm full" id="quick-java-args" placeholder="-XX:+UseG1GC ...">
               </div>
@@ -178,6 +189,10 @@
               <button class="action-item" onclick="openServerFolder()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                 Open Folder
+              </button>
+              <button class="action-item" onclick="openRenameModal()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                Rename Server
               </button>
               <button class="action-item danger" onclick="confirmDeleteServer()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
@@ -668,6 +683,28 @@
     <div class="modal-footer">
       <button class="btn-ghost" onclick="closeModal('modal-theme-url')">Cancel</button>
       <button class="btn-primary" id="theme-url-submit" onclick="installThemeFromUrl()">Install</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rename Server Modal -->
+<div class="modal-overlay hidden" id="modal-rename-server">
+  <div class="modal small">
+    <div class="modal-header">
+      <h2>Rename Server</h2>
+      <button class="modal-close" onclick="closeModal('modal-rename-server')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group full">
+        <label>Server Name</label>
+        <input type="text" id="rename-server-input" class="input" placeholder="My Server" onkeydown="if(event.key==='Enter')executeRenameServer()">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-rename-server')">Cancel</button>
+      <button class="btn-primary" onclick="executeRenameServer()">Rename</button>
     </div>
   </div>
 </div>

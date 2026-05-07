@@ -369,15 +369,17 @@ ipcMain.handle('update-server', (_, id, updates) => {
     const idx = cfg.servers.findIndex(s => s.id === id);
     if (idx === -1) return { error: 'Server not found' };
     cfg.servers[idx] = { ...cfg.servers[idx], ...updates };
-    
-    // If port changed, update server.properties
+
     if (updates.port) {
       const propsFile = path.join(cfg.servers[idx].dir, 'server.properties');
-      if (fs.existsSync(propsFile)) {
-        let props = fs.readFileSync(propsFile, 'utf8');
-        props = props.replace(/server-port=\d+/, `server-port=${updates.port}`);
-        fs.writeFileSync(propsFile, props);
+      let props = fs.existsSync(propsFile) ? fs.readFileSync(propsFile, 'utf8') : '';
+      const newLine = `server-port=${updates.port}`;
+      if (/^server-port=\d+/m.test(props)) {
+        props = props.replace(/^server-port=\d+/m, newLine);
+      } else {
+        props = props.length > 0 ? props.trimEnd() + '\n' + newLine + '\n' : newLine + '\n';
       }
+      fs.writeFileSync(propsFile, props);
     }
     saveConfig(cfg);
     return { success: true, server: cfg.servers[idx] };
@@ -399,61 +401,63 @@ ipcMain.handle('accept-eula', (_, id) => {
   }
 });
 
+async function startServerProcess(event, id) {
+  const cfg = loadConfig();
+  const srv = cfg.servers.find(s => s.id === id);
+  if (!srv) return { error: 'Server not found' };
+  if (runningServers[id]) return { error: 'Already running' };
+
+  const eulaFile = path.join(srv.dir, 'eula.txt');
+  const eulaAccepted = fs.existsSync(eulaFile) &&
+    fs.readFileSync(eulaFile, 'utf8').includes('eula=true');
+  if (!eulaAccepted) return { needsEula: true };
+
+  let jar = path.join(srv.dir, 'server.jar');
+  if (!fs.existsSync(jar)) {
+    const jars = fs.readdirSync(srv.dir).filter(f => f.endsWith('.jar'));
+    if (jars.length === 1) jar = path.join(srv.dir, jars[0]);
+    else if (jars.length === 0) return { error: 'No .jar found in server directory' };
+    else return { error: 'Multiple .jars found. Please rename one to server.jar' };
+  }
+
+  const javaPath = srv.javaPath || 'java';
+  const args = [
+    ...parsJavaArgs(srv.javaArgs || ''),
+    `-Xmx${srv.ram}`,
+    `-Xms${xmsFromRam(srv.ram)}`,
+    '-jar', jar, 'nogui'
+  ];
+
+  const proc = spawn(javaPath, args, { cwd: srv.dir, shell: false });
+  runningServers[id] = { process: proc, log: [] };
+
+  proc.stdout.on('data', data => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    lines.forEach(line => {
+      runningServers[id]?.log.push({ time: Date.now(), text: line, type: 'out' });
+      event.sender.send('server-log', { id, line, type: 'out' });
+    });
+  });
+
+  proc.stderr.on('data', data => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    lines.forEach(line => {
+      runningServers[id]?.log.push({ time: Date.now(), text: line, type: 'err' });
+      event.sender.send('server-log', { id, line, type: 'err' });
+    });
+  });
+
+  proc.on('exit', (code) => {
+    delete runningServers[id];
+    event.sender.send('server-stopped', { id, code });
+  });
+
+  return { success: true };
+}
+
 ipcMain.handle('start-server', async (event, id) => {
   try {
-    const cfg = loadConfig();
-    const srv = cfg.servers.find(s => s.id === id);
-    if (!srv) return { error: 'Server not found' };
-    if (runningServers[id]) return { error: 'Already running' };
-
-    // EULA check
-    const eulaFile = path.join(srv.dir, 'eula.txt');
-    const eulaAccepted = fs.existsSync(eulaFile) &&
-      fs.readFileSync(eulaFile, 'utf8').includes('eula=true');
-    if (!eulaAccepted) return { needsEula: true };
-
-    // Find jar
-    let jar = path.join(srv.dir, 'server.jar');
-    if (!fs.existsSync(jar)) {
-      const jars = fs.readdirSync(srv.dir).filter(f => f.endsWith('.jar'));
-      if (jars.length === 1) jar = path.join(srv.dir, jars[0]);
-      else if (jars.length === 0) return { error: 'No .jar found in server directory' };
-      else return { error: 'Multiple .jars found. Please rename one to server.jar' };
-    }
-
-    const javaPath = srv.javaPath || 'java';
-    const args = [
-      ...parsJavaArgs(srv.javaArgs || ''),
-      `-Xmx${srv.ram}`,
-      `-Xms${xmsFromRam(srv.ram)}`,
-      '-jar', jar, 'nogui'
-    ];
-
-    const proc = spawn(javaPath, args, { cwd: srv.dir, shell: false });
-    runningServers[id] = { process: proc, log: [] };
-
-    proc.stdout.on('data', data => {
-      const lines = data.toString().split('\n').filter(Boolean);
-      lines.forEach(line => {
-        runningServers[id]?.log.push({ time: Date.now(), text: line, type: 'out' });
-        event.sender.send('server-log', { id, line, type: 'out' });
-      });
-    });
-
-    proc.stderr.on('data', data => {
-      const lines = data.toString().split('\n').filter(Boolean);
-      lines.forEach(line => {
-        runningServers[id]?.log.push({ time: Date.now(), text: line, type: 'err' });
-        event.sender.send('server-log', { id, line, type: 'err' });
-      });
-    });
-
-    proc.on('exit', (code) => {
-      delete runningServers[id];
-      event.sender.send('server-stopped', { id, code });
-    });
-
-    return { success: true };
+    return await startServerProcess(event, id);
   } catch (e) {
     return { error: e.message };
   }
@@ -488,11 +492,12 @@ ipcMain.handle('restart-server', async (event, id) => {
     if (s) {
       s.process.stdin.write('stop\n');
       await new Promise(resolve => {
-        s.process.on('exit', resolve);
-        setTimeout(resolve, 10000);
+        s.process.once('exit', resolve);
+        setTimeout(resolve, 15000);
       });
+      delete runningServers[id];
     }
-    return ipcMain.emit('start-server', event, id);
+    return await startServerProcess(event, id);
   } catch (e) {
     return { error: e.message };
   }

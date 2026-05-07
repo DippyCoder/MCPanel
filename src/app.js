@@ -13,6 +13,7 @@ let historyIndex = -1;
 let startingServers = new Set();
 let serverStartTimes = {};
 let pendingEulaServerId = null;
+let consoleAutoScroll = true;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -41,6 +42,7 @@ async function init() {
   renderSidebarServers();
   startStatusPolling();
   startUptimeTicker();
+  setupConsoleScroll();
 
   // Event listeners
   window.mcpanel.on('server-log', ({ id, line, type }) => {
@@ -110,8 +112,11 @@ function openServerDetail(id) {
   document.getElementById('quick-port').value = srv.port;
   document.getElementById('quick-java-args').value = srv.javaArgs || '';
   document.getElementById('quick-java-path').value = srv.javaPath || 'java';
+  document.getElementById('quick-group').value = srv.group || '';
 
   // Load console history
+  consoleAutoScroll = true;
+  document.getElementById('autoscroll-banner').classList.add('hidden');
   const logEl = document.getElementById('console-output');
   logEl.innerHTML = '';
   const existingLog = window.mcpanel.getServerLog ? [] : [];
@@ -146,13 +151,46 @@ function openServerDetail(id) {
 function renderServersGrid() {
   const grid = document.getElementById('servers-grid');
   const empty = document.getElementById('servers-empty');
-  grid.querySelectorAll('.server-card').forEach(c => c.remove());
+  grid.querySelectorAll('.server-card, .group-header').forEach(c => c.remove());
+
   if (config.servers.length === 0) {
     if (empty) empty.classList.remove('hidden');
     return;
   }
   if (empty) empty.classList.add('hidden');
-  config.servers.forEach(srv => grid.appendChild(createServerCard(srv)));
+
+  const hasGroups = config.servers.some(s => s.group);
+  if (!hasGroups) {
+    config.servers.forEach(srv => grid.appendChild(createServerCard(srv)));
+    return;
+  }
+
+  const groups = {};
+  const ungrouped = [];
+  config.servers.forEach(srv => {
+    if (srv.group) {
+      if (!groups[srv.group]) groups[srv.group] = [];
+      groups[srv.group].push(srv);
+    } else {
+      ungrouped.push(srv);
+    }
+  });
+
+  Object.entries(groups).forEach(([groupName, servers]) => {
+    const header = document.createElement('div');
+    header.className = 'group-header';
+    header.innerHTML = `<span class="group-name">${escapeHtml(groupName)}</span><span class="group-count">${servers.length} server${servers.length !== 1 ? 's' : ''}</span>`;
+    grid.appendChild(header);
+    servers.forEach(srv => grid.appendChild(createServerCard(srv)));
+  });
+
+  if (ungrouped.length > 0) {
+    const header = document.createElement('div');
+    header.className = 'group-header';
+    header.innerHTML = `<span class="group-name">Ungrouped</span><span class="group-count">${ungrouped.length} server${ungrouped.length !== 1 ? 's' : ''}</span>`;
+    grid.appendChild(header);
+    ungrouped.forEach(srv => grid.appendChild(createServerCard(srv)));
+  }
 }
 
 function createServerCard(srv) {
@@ -442,7 +480,19 @@ function updateDetailControls(running) {
     // Control grid
     const controls = [
       { label: 'Stop', cls: 'stop', icon: `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`, action: () => window.mcpanel.stopServer(currentServerId) },
-      { label: 'Restart', cls: 'restart', icon: `<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>`, action: () => window.mcpanel.restartServer(currentServerId) },
+      { label: 'Restart', cls: 'restart', icon: `<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>`, action: async () => {
+        toast('Restarting server...', 'info');
+        const r = await window.mcpanel.restartServer(currentServerId);
+        if (r && r.error) toast(r.error, 'error');
+        else if (r && r.success) {
+          startingServers.add(currentServerId);
+          updateDetailControls(true);
+          updateDetailStarting();
+          updateServerCardStatus(currentServerId, 'starting', 0);
+          updateSidebarDot(currentServerId, true);
+          pollAllStatuses();
+        }
+      }},
       { label: 'Kill', cls: 'kill', icon: `<path d="M18 6L6 18M6 6l12 12"/>`, action: async () => { await window.mcpanel.killServer(currentServerId); updateDetailControls(false); toast('Server killed', 'error'); } },
     ];
     controls.forEach(({ label, cls, icon, action }) => {
@@ -539,6 +589,28 @@ function ansiToHtml(text) {
   return html;
 }
 
+// ─── Console Autoscroll ───────────────────────────────────────────────────────
+function setupConsoleScroll() {
+  const el = document.getElementById('console-output');
+  el.addEventListener('scroll', () => {
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+    if (atBottom && !consoleAutoScroll) {
+      consoleAutoScroll = true;
+      document.getElementById('autoscroll-banner').classList.add('hidden');
+    } else if (!atBottom && consoleAutoScroll) {
+      consoleAutoScroll = false;
+      document.getElementById('autoscroll-banner').classList.remove('hidden');
+    }
+  });
+}
+
+function resumeAutoscroll() {
+  const el = document.getElementById('console-output');
+  consoleAutoScroll = true;
+  document.getElementById('autoscroll-banner').classList.add('hidden');
+  el.scrollTop = el.scrollHeight;
+}
+
 // ─── Console ──────────────────────────────────────────────────────────────────
 function appendConsoleLine(text, type = 'out') {
   const el = document.getElementById('console-output');
@@ -558,12 +630,14 @@ function appendConsoleLine(text, type = 'out') {
   const body = type === 'system' ? escapeHtml(text) : ansiToHtml(text);
   line.innerHTML = `<span class="log-time">[${time}]</span><span class="log-text">${body}</span>`;
   el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
+  if (consoleAutoScroll) el.scrollTop = el.scrollHeight;
 }
 
 function clearConsole() {
   const el = document.getElementById('console-output');
   if (el) el.innerHTML = '';
+  consoleAutoScroll = true;
+  document.getElementById('autoscroll-banner').classList.add('hidden');
 }
 
 function handleConsoleKey(e) {
@@ -606,10 +680,12 @@ async function saveQuickSettings() {
   if (!currentServerId) return;
   const javaArgs = document.getElementById('quick-java-args').value;
   const javaPath = document.getElementById('quick-java-path').value;
-  const r = await window.mcpanel.updateServer(currentServerId, { javaArgs, javaPath });
+  const group = document.getElementById('quick-group').value.trim() || null;
+  const r = await window.mcpanel.updateServer(currentServerId, { javaArgs, javaPath, group });
   if (r.error) { toast(r.error, 'error'); return; }
   const idx = config.servers.findIndex(s => s.id === currentServerId);
-  if (idx !== -1) { config.servers[idx].javaArgs = javaArgs; config.servers[idx].javaPath = javaPath; }
+  if (idx !== -1) { config.servers[idx].javaArgs = javaArgs; config.servers[idx].javaPath = javaPath; config.servers[idx].group = group; }
+  renderServersGrid();
   toast('Settings saved', 'success');
 }
 
@@ -625,6 +701,32 @@ async function browseJavaCreate() {
 
 function openServerFolder() {
   if (currentServerId) window.mcpanel.openServerFolder(currentServerId);
+}
+
+// ─── Rename Server ────────────────────────────────────────────────────────────
+function openRenameModal() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  document.getElementById('rename-server-input').value = srv.name;
+  openModal('modal-rename-server');
+}
+
+async function executeRenameServer() {
+  if (!currentServerId) return;
+  const newName = document.getElementById('rename-server-input').value.trim();
+  if (!newName) { toast('Please enter a name', 'error'); return; }
+  const r = await window.mcpanel.updateServer(currentServerId, { name: newName });
+  if (r.error) { toast(r.error, 'error'); return; }
+  const idx = config.servers.findIndex(s => s.id === currentServerId);
+  if (idx !== -1) config.servers[idx].name = newName;
+  document.getElementById('detail-server-name').textContent = newName;
+  const nameEl = document.querySelector(`#card-${currentServerId} .server-card-name`);
+  if (nameEl) nameEl.textContent = newName;
+  const sidebarName = document.querySelector(`[data-server-id="${currentServerId}"] .srv-name`);
+  if (sidebarName) sidebarName.textContent = newName;
+  closeModal('modal-rename-server');
+  toast('Server renamed', 'success');
 }
 
 // ─── Delete Server ────────────────────────────────────────────────────────────

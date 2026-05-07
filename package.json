@@ -1,6 +1,6 @@
 {
   "name": "mcpanel",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Minecraft Server Panel",
   "main": "main.js",
   "scripts": {
