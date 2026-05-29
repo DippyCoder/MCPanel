@@ -4,6 +4,12 @@ echo "  MCPanel - Minecraft Server Panel"
 echo "  =================================="
 echo ""
 
+# When run with sudo, PATH is stripped. Source nvm from the invoking user's home.
+INVOKING_USER="${SUDO_USER:-$USER}"
+INVOKING_HOME=$(getent passwd "$INVOKING_USER" | cut -d: -f6)
+NVM_DIR="${INVOKING_HOME}/.config/nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
 if ! command -v node &> /dev/null; then
     echo "[ERROR] Node.js is not installed."
     echo "        Install from: https://nodejs.org"

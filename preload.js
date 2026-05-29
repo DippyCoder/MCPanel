@@ -52,8 +52,14 @@ contextBridge.exposeInMainWorld('mcpanel', {
   importProfile: (data) => ipcRenderer.invoke('import-profile', data),
   importServer: (data) => ipcRenderer.invoke('import-server', data),
 
+  // Server tools
+  getServerFileTree: (id) => ipcRenderer.invoke('get-server-file-tree', id),
+  createProfileFromServer: (id, profileData, selectedPaths) => ipcRenderer.invoke('create-profile-from-server', id, profileData, selectedPaths),
+  duplicateServer: (id, newName) => ipcRenderer.invoke('duplicate-server', id, newName),
+
   // App info
   getVersion: () => ipcRenderer.invoke('get-version'),
+  getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
 
   // Updates
   checkUpdate: () => ipcRenderer.invoke('check-update'),
