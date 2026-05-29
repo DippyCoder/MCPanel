@@ -108,6 +108,12 @@ async function fetchSpigotVersions(unstable = false) {
   ];
 }
 
+async function fetchFoliaVersions(unstable = false) {
+  const data = await fetchJSON('https://api.papermc.io/v2/projects/folia');
+  const isPreRelease = v => /-(pre|rc|alpha|beta|snapshot)\d*/i.test(v);
+  return (unstable ? data.versions : data.versions.filter(v => !isPreRelease(v))).reverse();
+}
+
 // ─── Download URL resolvers ───────────────────────────────────────────────────
 async function resolveDownloadUrl(software, version, unstable = false) {
   switch (software) {
@@ -151,6 +157,13 @@ async function resolveDownloadUrl(software, version, unstable = false) {
                || rel.assets.find(a => a.name.endsWith('.jar'));
       if (!jar) throw new Error(`No JAR asset found for Leaf ${version}`);
       return jar.browser_download_url;
+    }
+    case 'folia': {
+      const data = await fetchJSON(`https://api.papermc.io/v2/projects/folia/versions/${version}/builds`);
+      const stable = data.builds.filter(b => b.channel === 'STABLE');
+      const pool = (!unstable && stable.length > 0) ? stable : data.builds;
+      const latest = pool[pool.length - 1];
+      return `https://api.papermc.io/v2/projects/folia/versions/${version}/builds/${latest.build}/downloads/${latest.downloads.application.name}`;
     }
     case 'spigot':
       throw new Error('Spigot requires BuildTools. Download from https://www.spigotmc.org/wiki/buildtools/');
@@ -276,6 +289,7 @@ ipcMain.handle('fetch-versions', async (_, software, preRelease = false, unstabl
       fabric:   () => fetchFabricVersions(preRelease),
       vanilla:  () => fetchVanillaVersions(preRelease),
       leaf:     () => fetchLeafVersions(unstable),
+      folia:    () => fetchFoliaVersions(unstable),
       spigot:   () => fetchSpigotVersions(),
     };
     if (!fetchers[software]) return { error: 'Unknown software' };
@@ -411,6 +425,17 @@ async function startServerProcess(event, id) {
   const eulaAccepted = fs.existsSync(eulaFile) &&
     fs.readFileSync(eulaFile, 'utf8').includes('eula=true');
   if (!eulaAccepted) return { needsEula: true };
+
+  if (srv.storageLimit) {
+    const limitBytes = parseStorageLimit(srv.storageLimit);
+    if (limitBytes !== null) {
+      const currentSize = getDirSize(srv.dir);
+      if (currentSize > limitBytes) {
+        const usedMB = Math.round(currentSize / 1048576);
+        return { error: `Storage limit exceeded: ${usedMB} MB used, limit is ${srv.storageLimit}` };
+      }
+    }
+  }
 
   let jar = path.join(srv.dir, 'server.jar');
   if (!fs.existsSync(jar)) {
@@ -653,6 +678,16 @@ function copyDirSync(src, dest) {
   }
 }
 
+function parseStorageLimit(str) {
+  if (!str) return null;
+  const m = String(str).trim().match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|K|M|G|T)?$/i);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  const unit = ((m[2] || 'B').toUpperCase()).replace(/B$/, '');
+  const mult = { '': 1, 'K': 1024, 'M': 1048576, 'G': 1073741824, 'T': 1099511627776 };
+  return num * (mult[unit] ?? 1);
+}
+
 function getDirSize(dir) {
   let size = 0;
   try {
@@ -699,6 +734,84 @@ ipcMain.handle('check-update', async () => {
   }
 });
 
+function buildFileTree(dirPath, rootPath, depth = 0) {
+  if (depth > 10) return [];
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const items = [];
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      const relPath = path.relative(rootPath, fullPath);
+      if (entry.isDirectory()) {
+        items.push({ name: entry.name, type: 'dir', path: relPath, children: buildFileTree(fullPath, rootPath, depth + 1) });
+      } else {
+        items.push({ name: entry.name, type: 'file', path: relPath, size: fs.statSync(fullPath).size });
+      }
+    }
+    return items.sort((a, b) => a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : a.name.localeCompare(b.name));
+  } catch { return []; }
+}
+
+ipcMain.handle('get-server-file-tree', (_, id) => {
+  try {
+    const cfg = loadConfig();
+    const srv = cfg.servers.find(s => s.id === id);
+    if (!srv) return { error: 'Server not found' };
+    return { tree: buildFileTree(srv.dir, srv.dir) };
+  } catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle('create-profile-from-server', (_, id, profileData, selectedPaths) => {
+  try {
+    const cfg = loadConfig();
+    const srv = cfg.servers.find(s => s.id === id);
+    if (!srv) return { error: 'Server not found' };
+    const profileId = 'profile_' + Date.now();
+    const profileDir = path.join(PROFILES_DIR, profileId);
+    fs.mkdirSync(profileDir, { recursive: true });
+    for (const relPath of selectedPaths) {
+      const srcPath = path.join(srv.dir, relPath);
+      const destPath = path.join(profileDir, relPath);
+      if (!fs.existsSync(srcPath)) continue;
+      if (fs.statSync(srcPath).isFile()) {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.copyFileSync(srcPath, destPath);
+      }
+    }
+    const meta = { id: profileId, name: profileData.name, description: profileData.description || '', software: profileData.software || [], versions: profileData.versions || [], created: Date.now() };
+    fs.writeFileSync(path.join(profileDir, 'profile.json'), JSON.stringify(meta, null, 2));
+    return { success: true, profile: meta };
+  } catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle('duplicate-server', async (event, id, newName) => {
+  try {
+    const cfg = loadConfig();
+    const src = cfg.servers.find(s => s.id === id);
+    if (!src) return { error: 'Server not found' };
+    const newId = 'srv_' + Date.now();
+    const newDir = path.join(SERVERS_DIR, newId);
+    fs.mkdirSync(newDir, { recursive: true });
+    event.sender.send('download-progress', { id: newId, progress: 0, status: 'Copying server files…' });
+    copyDirSync(src.dir, newDir);
+    event.sender.send('download-progress', { id: newId, progress: 100, status: 'Done!' });
+    const newServer = { ...src, id: newId, name: newName, dir: newDir, created: Date.now() };
+    cfg.servers.push(newServer);
+    saveConfig(cfg);
+    return { success: true, server: newServer };
+  } catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle('get-system-info', () => {
+  const totalRam = os.totalmem();
+  let availableStorage = null;
+  try {
+    const stats = fs.statfsSync(SERVERS_DIR);
+    availableStorage = stats.bavail * stats.bsize;
+  } catch {}
+  return { totalRam, availableStorage };
+});
+
 ipcMain.handle('get-version', () => app.getVersion());
 
 ipcMain.handle('open-external', (_, url) => {
@@ -720,7 +833,7 @@ ipcMain.handle('scan-server-folder', (_, folderPath) => {
       const portMatch = props.match(/^server-port=(\d+)/m);
       if (portMatch) result.port = parseInt(portMatch[1]);
     }
-    const softwareKeys = ['paper', 'purpur', 'leaf', 'fabric', 'velocity', 'spigot', 'vanilla'];
+    const softwareKeys = ['paper', 'purpur', 'folia', 'leaf', 'fabric', 'velocity', 'spigot', 'vanilla'];
     const jars = fs.existsSync(folderPath) ? fs.readdirSync(folderPath).filter(f => f.endsWith('.jar')) : [];
     for (const jar of jars) {
       const lc = jar.toLowerCase();

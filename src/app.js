@@ -5,6 +5,7 @@
 let config = { servers: [], jdkPaths: [] };
 let profiles = [];
 let currentServerId = null;
+let systemInfo = { totalRam: null, availableStorage: null };
 let versionCache = {};
 let statusPollInterval = null;
 let uptimeInterval = null;
@@ -18,6 +19,7 @@ let consoleAutoScroll = true;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   config = await window.mcpanel.getConfig();
+  window.mcpanel.getSystemInfo().then(info => { systemInfo = info; });
 
   // Apply saved theme before rendering UI to avoid flash
   if (config.activeTheme) {
@@ -138,11 +140,15 @@ function openServerDetail(id) {
 
   // Storage stats (async)
   window.mcpanel.getServerDirStats(id).then(({ size }) => {
+    const storageEl = document.getElementById('detail-storage');
+    const used = formatBytes(size);
     if (srv.storageLimit) {
-      const used = formatBytes(size);
-      document.getElementById('detail-storage').textContent = `${used} / ${srv.storageLimit}`;
+      storageEl.textContent = `${used} / ${srv.storageLimit}`;
+      const limitBytes = parseStorageLimit(srv.storageLimit);
+      storageEl.style.color = (limitBytes !== null && size > limitBytes) ? 'var(--red)' : '';
     } else {
-      document.getElementById('detail-storage').textContent = formatBytes(size);
+      storageEl.textContent = used;
+      storageEl.style.color = '';
     }
   });
 }
@@ -673,6 +679,8 @@ async function applyQuickPort() {
   const idx = config.servers.findIndex(s => s.id === currentServerId);
   if (idx !== -1) config.servers[idx].port = port;
   document.getElementById('detail-port').textContent = port;
+  document.getElementById('detail-server-subtitle').textContent =
+    `${config.servers[idx].version} · ${capitalise(config.servers[idx].software)} · Port ${port}`;
   toast('Port updated', 'success');
 }
 
@@ -684,14 +692,91 @@ async function saveQuickSettings() {
   const r = await window.mcpanel.updateServer(currentServerId, { javaArgs, javaPath, group });
   if (r.error) { toast(r.error, 'error'); return; }
   const idx = config.servers.findIndex(s => s.id === currentServerId);
-  if (idx !== -1) { config.servers[idx].javaArgs = javaArgs; config.servers[idx].javaPath = javaPath; config.servers[idx].group = group; }
+  if (idx !== -1) {
+    config.servers[idx].javaArgs = javaArgs;
+    config.servers[idx].javaPath = javaPath;
+    config.servers[idx].group = group;
+  }
   renderServersGrid();
   toast('Settings saved', 'success');
 }
 
 async function browseJava() {
-  const path = await window.mcpanel.browseJava();
-  if (path) document.getElementById('quick-java-path').value = path;
+  const p = await window.mcpanel.browseJava();
+  if (p) document.getElementById('quick-java-path').value = p;
+}
+
+// ─── Server Settings Modal ────────────────────────────────────────────────────
+function openServerSettingsModal() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  document.getElementById('ss-name').value = srv.name;
+  setRamDropdown('ss', srv.ram || '2G');
+  document.getElementById('ss-storage').value = srv.storageLimit || '';
+  document.getElementById('ss-port').value = srv.port;
+  document.getElementById('ss-group').value = srv.group || '';
+  document.getElementById('ss-java-args').value = srv.javaArgs || '';
+  document.getElementById('ss-java-path').value = srv.javaPath || 'java';
+  openModal('modal-server-settings');
+}
+
+async function saveServerSettings() {
+  if (!currentServerId) return;
+  const name = document.getElementById('ss-name').value.trim();
+  if (!name) { toast('Please enter a server name', 'error'); return; }
+  const ram = getRamValue('ss');
+  if (!ram) { toast('Please enter a custom RAM value (e.g. 3G, 2048M)', 'error'); return; }
+  const storageLimit = document.getElementById('ss-storage').value.trim() || null;
+  const port = parseInt(document.getElementById('ss-port').value) || null;
+  const group = document.getElementById('ss-group').value.trim() || null;
+  const javaArgs = document.getElementById('ss-java-args').value.trim();
+  const javaPath = document.getElementById('ss-java-path').value.trim() || 'java';
+
+  if (storageLimit) {
+    const bytes = parseStorageLimit(storageLimit);
+    if (bytes === null) { toast('Invalid storage limit format (e.g. 10GB, 2048MB)', 'error'); return; }
+    if (bytes < 500 * 1048576) { toast('Storage limit must be at least 500MB', 'error'); return; }
+  }
+  const deviceErr = validateRamAndStorage(ram, storageLimit);
+  if (deviceErr) { toast(deviceErr, 'error'); return; }
+
+  const updates = { name, ram, storageLimit, javaArgs, javaPath, group };
+  if (port) updates.port = port;
+
+  const r = await window.mcpanel.updateServer(currentServerId, updates);
+  if (r.error) { toast(r.error, 'error'); return; }
+
+  const idx = config.servers.findIndex(s => s.id === currentServerId);
+  if (idx !== -1) config.servers[idx] = { ...config.servers[idx], ...updates };
+  const srv = config.servers[idx];
+
+  document.getElementById('detail-server-name').textContent = name;
+  document.getElementById('detail-server-subtitle').textContent = `${srv.version} · ${capitalise(srv.software)} · Port ${srv.port}`;
+  document.getElementById('detail-ram').textContent = ram;
+  document.getElementById('detail-storage').textContent = storageLimit || 'Unlimited';
+  document.getElementById('detail-storage').style.color = '';
+  if (port) document.getElementById('detail-port').textContent = port;
+
+  const nameEl = document.querySelector(`#card-${currentServerId} .server-card-name`);
+  if (nameEl) nameEl.textContent = name;
+  const sidebarName = document.querySelector(`[data-server-id="${currentServerId}"] .srv-name`);
+  if (sidebarName) sidebarName.textContent = name;
+
+  // Keep quick settings fields in sync
+  if (port) document.getElementById('quick-port').value = port;
+  document.getElementById('quick-java-args').value = javaArgs;
+  document.getElementById('quick-java-path').value = javaPath;
+  document.getElementById('quick-group').value = group || '';
+
+  closeModal('modal-server-settings');
+  renderServersGrid();
+  toast('Settings saved', 'success');
+}
+
+async function browseJavaSettings() {
+  const p = await window.mcpanel.browseJava();
+  if (p) document.getElementById('ss-java-path').value = p;
 }
 
 async function browseJavaCreate() {
@@ -699,34 +784,67 @@ async function browseJavaCreate() {
   if (path) document.getElementById('cs-java').value = path;
 }
 
+function onRamChange(prefix) {
+  const sel = document.getElementById(`${prefix}-ram`);
+  const customEl = document.getElementById(`${prefix}-ram-custom`);
+  if (!customEl) return;
+  const isCustom = sel.value === 'custom';
+  customEl.style.display = isCustom ? '' : 'none';
+  if (isCustom) customEl.focus();
+}
+
+function getRamValue(prefix) {
+  const sel = document.getElementById(`${prefix}-ram`);
+  if (sel.value === 'custom') {
+    return document.getElementById(`${prefix}-ram-custom`).value.trim() || null;
+  }
+  return sel.value;
+}
+
+function setRamDropdown(prefix, value) {
+  const sel = document.getElementById(`${prefix}-ram`);
+  const customEl = document.getElementById(`${prefix}-ram-custom`);
+  const knownValues = ['512M','1G','2G','4G','6G','8G','12G','16G'];
+  if (knownValues.includes(value)) {
+    sel.value = value;
+    if (customEl) customEl.style.display = 'none';
+  } else {
+    sel.value = 'custom';
+    if (customEl) { customEl.value = value || ''; customEl.style.display = ''; }
+  }
+}
+
+function validateRamAndStorage(ram, storageLimit) {
+  const ramBytes = parseStorageLimit(ram);
+  if (ramBytes !== null && systemInfo.totalRam !== null && ramBytes > systemInfo.totalRam) {
+    return `RAM limit cannot exceed your system's total RAM (${formatBytes(systemInfo.totalRam)})`;
+  }
+  if (storageLimit) {
+    const storageBytes = parseStorageLimit(storageLimit);
+    if (storageBytes !== null && systemInfo.availableStorage !== null && storageBytes > systemInfo.availableStorage) {
+      return `Storage limit cannot exceed available disk space (${formatBytes(systemInfo.availableStorage)})`;
+    }
+  }
+  return null;
+}
+
+function parseStorageLimit(str) {
+  if (!str) return null;
+  const m = String(str).trim().match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|K|M|G|T)?$/i);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  const unit = ((m[2] || 'B').toUpperCase()).replace(/B$/, '');
+  const mult = { '': 1, 'K': 1024, 'M': 1048576, 'G': 1073741824, 'T': 1099511627776 };
+  return num * (mult[unit] ?? 1);
+}
+
 function openServerFolder() {
   if (currentServerId) window.mcpanel.openServerFolder(currentServerId);
 }
 
-// ─── Rename Server ────────────────────────────────────────────────────────────
+// ─── Rename Server (redirects to settings modal) ──────────────────────────────
 function openRenameModal() {
-  if (!currentServerId) return;
-  const srv = config.servers.find(s => s.id === currentServerId);
-  if (!srv) return;
-  document.getElementById('rename-server-input').value = srv.name;
-  openModal('modal-rename-server');
-}
-
-async function executeRenameServer() {
-  if (!currentServerId) return;
-  const newName = document.getElementById('rename-server-input').value.trim();
-  if (!newName) { toast('Please enter a name', 'error'); return; }
-  const r = await window.mcpanel.updateServer(currentServerId, { name: newName });
-  if (r.error) { toast(r.error, 'error'); return; }
-  const idx = config.servers.findIndex(s => s.id === currentServerId);
-  if (idx !== -1) config.servers[idx].name = newName;
-  document.getElementById('detail-server-name').textContent = newName;
-  const nameEl = document.querySelector(`#card-${currentServerId} .server-card-name`);
-  if (nameEl) nameEl.textContent = newName;
-  const sidebarName = document.querySelector(`[data-server-id="${currentServerId}"] .srv-name`);
-  if (sidebarName) sidebarName.textContent = newName;
-  closeModal('modal-rename-server');
-  toast('Server renamed', 'success');
+  openServerSettingsModal();
 }
 
 // ─── Delete Server ────────────────────────────────────────────────────────────
@@ -753,6 +871,7 @@ async function openCreateServerModal() {
   if (pre) pre.checked = false;
   const unstable = document.getElementById('cs-unstable');
   if (unstable) unstable.checked = false;
+  setRamDropdown('cs', '2G');
   await loadProfilesForCreate();
   openModal('modal-create-server');
   onSoftwareChange();
@@ -774,10 +893,10 @@ async function onSoftwareChange() {
   }
   if (preReleaseLbl) preReleaseLbl.style.opacity = supportsSnapshot ? '' : '0.35';
 
-  // Unstable builds checkbox: Paper, Purpur, Leaf, Velocity
+  // Unstable builds checkbox: Paper, Purpur, Folia, Leaf, Velocity
   const unstableEl = document.getElementById('cs-unstable');
   const unstableLbl = document.getElementById('lbl-unstable');
-  const supportsUnstable = ['paper', 'purpur', 'leaf', 'velocity'].includes(software);
+  const supportsUnstable = ['paper', 'purpur', 'folia', 'leaf', 'velocity'].includes(software);
   if (unstableEl) {
     unstableEl.disabled = !supportsUnstable;
     if (!supportsUnstable) unstableEl.checked = false;
@@ -850,16 +969,24 @@ async function createServer() {
   const software = document.getElementById('cs-software').value;
   const version = document.getElementById('cs-version').value;
   const port = parseInt(document.getElementById('cs-port').value) || 25565;
-  const ram = document.getElementById('cs-ram').value;
+  const ram = getRamValue('cs');
   const storageLimit = document.getElementById('cs-storage').value.trim();
   const javaPath = document.getElementById('cs-java').value.trim() || 'java';
   const javaArgs = document.getElementById('cs-java-args').value.trim();
   const profileId = document.getElementById('cs-profile').value;
 
   if (!name) { toast('Please enter a server name', 'error'); return; }
+  if (!ram) { toast('Please enter a custom RAM value (e.g. 3G, 2048M)', 'error'); return; }
   if (!version || version === 'Loading...' || version === 'Failed to load') {
     toast('Please select a version', 'error'); return;
   }
+  if (storageLimit) {
+    const bytes = parseStorageLimit(storageLimit);
+    if (bytes === null) { toast('Invalid storage limit format (e.g. 10GB, 2048MB)', 'error'); return; }
+    if (bytes < 500 * 1048576) { toast('Storage limit must be at least 500MB', 'error'); return; }
+  }
+  const deviceErr = validateRamAndStorage(ram, storageLimit);
+  if (deviceErr) { toast(deviceErr, 'error'); return; }
 
   const btn = document.getElementById('cs-submit');
   btn.disabled = true; btn.textContent = 'Creating...';
@@ -1027,7 +1154,7 @@ function openImportServerModal() {
   document.getElementById('is-version').value = '';
   document.getElementById('is-port').value = '25565';
   document.getElementById('is-software').value = 'paper';
-  document.getElementById('is-ram').value = '2G';
+  setRamDropdown('is', '2G');
   document.getElementById('is-java').value = 'java';
   document.getElementById('is-java-args').value = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200';
   openModal('modal-import-server');
@@ -1060,7 +1187,10 @@ async function importServer() {
   const software = document.getElementById('is-software').value;
   const version = document.getElementById('is-version').value.trim() || 'Unknown';
   const port = parseInt(document.getElementById('is-port').value) || 25565;
-  const ram = document.getElementById('is-ram').value;
+  const ram = getRamValue('is');
+  if (!ram) { toast('Please enter a custom RAM value (e.g. 3G, 2048M)', 'error'); return; }
+  const deviceErr = validateRamAndStorage(ram, null);
+  if (deviceErr) { toast(deviceErr, 'error'); return; }
   const javaPath = document.getElementById('is-java').value.trim() || 'java';
   const javaArgs = document.getElementById('is-java-args').value.trim();
 
@@ -1127,6 +1257,178 @@ async function detectJdk() {
     `;
     list.appendChild(item);
   });
+}
+
+// ─── Duplicate Server ─────────────────────────────────────────────────────────
+function openDuplicateServerModal() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  document.getElementById('dup-name').value = `Copy of ${srv.name}`;
+  closeModal('modal-server-settings');
+  openModal('modal-duplicate-server');
+}
+
+async function executeDuplicateServer() {
+  const newName = document.getElementById('dup-name').value.trim();
+  if (!newName) { toast('Please enter a name', 'error'); return; }
+  const btn = document.getElementById('dup-submit');
+  btn.disabled = true; btn.textContent = 'Duplicating…';
+  closeModal('modal-duplicate-server');
+  document.getElementById('modal-download-title').textContent = 'Duplicating Server';
+  openModal('modal-download');
+  const r = await window.mcpanel.duplicateServer(currentServerId, newName);
+  closeModal('modal-download');
+  document.getElementById('modal-download-title').textContent = 'Creating Server';
+  btn.disabled = false; btn.textContent = 'Duplicate';
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  config.servers.push(r.server);
+  renderServersGrid();
+  renderSidebarServers();
+  toast(`Server "${newName}" duplicated!`, 'success');
+}
+
+// ─── Create Profile from Server ───────────────────────────────────────────────
+const FTREE_SELECTED_DEFAULTS = new Set(['mods', 'plugins']);
+
+async function openCreateProfileFromServerModal() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  document.getElementById('pfs-name').value = srv.name + ' Profile';
+  document.getElementById('pfs-desc').value = '';
+  document.getElementById('pfs-versions').value = '';
+  document.querySelectorAll('#pfs-software-checks input').forEach(cb => cb.checked = false);
+  document.getElementById('pfs-submit').disabled = false;
+  document.getElementById('pfs-submit').textContent = 'Create Profile';
+  closeModal('modal-server-settings');
+  openModal('modal-profile-from-server');
+  const ftreeEl = document.getElementById('pfs-ftree');
+  ftreeEl.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:12px">Loading files…</div>`;
+  const r = await window.mcpanel.getServerFileTree(currentServerId);
+  ftreeEl.innerHTML = '';
+  if (r.error) {
+    ftreeEl.innerHTML = `<div style="padding:24px;color:var(--red);font-size:12px">${escapeHtml(r.error)}</div>`;
+    return;
+  }
+  if (!r.tree || r.tree.length === 0) {
+    ftreeEl.innerHTML = `<div style="padding:24px;color:var(--text-muted);font-size:12px">No files found.</div>`;
+    return;
+  }
+  r.tree.forEach(node => ftreeEl.appendChild(buildFtreeNode(node, 0, false)));
+}
+
+function buildFtreeNode(node, depth, parentSelected) {
+  const selected = parentSelected || FTREE_SELECTED_DEFAULTS.has(node.name);
+  const wrap = document.createElement('div');
+
+  if (node.type === 'dir') {
+    const row = document.createElement('div');
+    row.className = 'ftree-item';
+    row.style.paddingLeft = `${depth * 16 + 6}px`;
+
+    const toggle = document.createElement('button');
+    toggle.className = 'ftree-toggle';
+    toggle.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>`;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'ftree-check';
+    cb.dataset.path = node.path; cb.dataset.ftype = 'dir';
+    cb.checked = selected;
+
+    const icon = document.createElement('span');
+    icon.className = 'ftree-icon';
+    icon.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+
+    const label = document.createElement('span');
+    label.className = 'ftree-name dir';
+    label.textContent = node.name;
+
+    row.append(toggle, cb, icon, label);
+
+    const children = document.createElement('div');
+    children.className = 'ftree-children';
+    children.style.display = 'none'; // always start collapsed
+    node.children.forEach(child => children.appendChild(buildFtreeNode(child, depth + 1, selected)));
+
+    toggle.onclick = () => {
+      const collapsed = children.style.display === 'none';
+      children.style.display = collapsed ? '' : 'none';
+      toggle.style.transform = collapsed ? 'rotate(90deg)' : '';
+    };
+
+    cb.onchange = () => {
+      children.querySelectorAll('.ftree-check').forEach(c => { c.checked = cb.checked; c.indeterminate = false; });
+    };
+    children.addEventListener('change', () => ftreeSyncParent(cb, children));
+
+    wrap.append(row, children);
+  } else {
+    const row = document.createElement('div');
+    row.className = 'ftree-item';
+    row.style.paddingLeft = `${depth * 16 + 22}px`;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'ftree-check';
+    cb.dataset.path = node.path; cb.dataset.ftype = 'file';
+    cb.checked = selected;
+
+    const icon = document.createElement('span');
+    icon.className = 'ftree-icon';
+    icon.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+
+    const label = document.createElement('span');
+    label.className = 'ftree-name';
+    label.textContent = node.name;
+
+    const size = document.createElement('span');
+    size.className = 'ftree-size';
+    size.textContent = formatBytes(node.size);
+
+    row.append(cb, icon, label, size);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function ftreeSyncParent(parentCb, childrenEl) {
+  const all = Array.from(childrenEl.querySelectorAll(':scope > div > .ftree-item > .ftree-check'));
+  if (!all.length) return;
+  const checked = all.filter(c => c.checked && !c.indeterminate).length;
+  const indeterminate = all.some(c => c.indeterminate) || (checked > 0 && checked < all.length);
+  parentCb.indeterminate = indeterminate;
+  parentCb.checked = indeterminate ? true : checked === all.length;
+}
+
+function ftreeSelectAll() {
+  document.querySelectorAll('#pfs-ftree .ftree-check').forEach(cb => { cb.checked = true; cb.indeterminate = false; });
+}
+
+function ftreeSelectNone() {
+  document.querySelectorAll('#pfs-ftree .ftree-check').forEach(cb => { cb.checked = false; cb.indeterminate = false; });
+}
+
+async function submitCreateProfileFromServer() {
+  const name = document.getElementById('pfs-name').value.trim();
+  if (!name) { toast('Please enter a profile name', 'error'); return; }
+  const selectedPaths = Array.from(document.querySelectorAll('#pfs-ftree .ftree-check[data-ftype="file"]:checked'))
+    .map(cb => cb.dataset.path);
+  if (selectedPaths.length === 0) { toast('Select at least one file', 'error'); return; }
+  const btn = document.getElementById('pfs-submit');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  const software = Array.from(document.querySelectorAll('#pfs-software-checks input:checked')).map(cb => cb.value);
+  const versionsRaw = document.getElementById('pfs-versions').value.trim();
+  const versions = versionsRaw ? versionsRaw.split(',').map(v => v.trim()).filter(Boolean) : [];
+  const r = await window.mcpanel.createProfileFromServer(
+    currentServerId,
+    { name, description: document.getElementById('pfs-desc').value.trim(), software, versions },
+    selectedPaths
+  );
+  btn.disabled = false; btn.textContent = 'Create Profile';
+  if (r.error) { toast('Error: ' + r.error, 'error'); return; }
+  profiles.push(r.profile);
+  closeModal('modal-profile-from-server');
+  toast(`Profile "${name}" created!`, 'success');
 }
 
 // ─── Modal helpers ────────────────────────────────────────────────────────────

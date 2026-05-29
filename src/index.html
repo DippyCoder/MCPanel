@@ -190,13 +190,9 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                 Open Folder
               </button>
-              <button class="action-item" onclick="openRenameModal()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                Rename Server
-              </button>
-              <button class="action-item danger" onclick="confirmDeleteServer()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                Delete Server
+              <button class="action-item" onclick="openServerSettingsModal()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+                Settings
               </button>
             </div>
           </div>
@@ -297,7 +293,7 @@
           <h3>About</h3>
           <p class="section-desc" id="about-version">MCPanel · Built for Minecraft server management</p>
           <div class="about-grid">
-            <div class="about-item"><span>Supported Software</span><span class="mono">Paper, Purpur, Leaf, Vanilla, Fabric, Velocity, Spigot</span></div>
+            <div class="about-item"><span>Supported Software</span><span class="mono">Paper, Purpur, Folia, Leaf, Vanilla, Fabric, Velocity, Spigot</span></div>
             <div class="about-item"><span>Version Fetching</span><span class="mono">Live from official APIs</span></div>
             <div class="about-item"><span>Profile System</span><span class="mono">Folder-based presets</span></div>
           </div>
@@ -329,6 +325,7 @@
           <select id="cs-software" class="input" onchange="onSoftwareChange()">
             <option value="paper">Paper</option>
             <option value="purpur">Purpur</option>
+            <option value="folia">Folia</option>
             <option value="leaf">Leaf</option>
             <option value="vanilla">Vanilla</option>
             <option value="fabric">Fabric</option>
@@ -351,7 +348,7 @@
           <label class="checkbox-item" id="lbl-unstable">
             <input type="checkbox" id="cs-unstable" onchange="onSoftwareChange()">
             Include unstable builds
-            <span style="opacity:0.55;font-size:11px">(Paper, Purpur, Leaf, Velocity)</span>
+            <span style="opacity:0.55;font-size:11px">(Paper, Purpur, Folia, Leaf, Velocity)</span>
           </label>
         </div>
         <div class="form-group">
@@ -360,7 +357,7 @@
         </div>
         <div class="form-group">
           <label>RAM Allocation</label>
-          <select id="cs-ram" class="input">
+          <select id="cs-ram" class="input" onchange="onRamChange('cs')">
             <option value="512M">512 MB</option>
             <option value="1G">1 GB</option>
             <option value="2G" selected>2 GB</option>
@@ -369,10 +366,12 @@
             <option value="8G">8 GB</option>
             <option value="12G">12 GB</option>
             <option value="16G">16 GB</option>
+            <option value="custom">Custom...</option>
           </select>
+          <input type="text" id="cs-ram-custom" class="input" placeholder="e.g. 3G, 2048M" style="display:none;margin-top:6px">
         </div>
         <div class="form-group">
-          <label>Storage Limit <span class="label-hint">(optional, e.g. 10GB)</span></label>
+          <label>Storage Limit <span class="label-hint">(optional — min 500MB, 2GB+ recommended)</span></label>
           <input type="text" id="cs-storage" class="input" placeholder="Unlimited">
         </div>
         <div class="form-group full">
@@ -435,6 +434,7 @@
           <div class="checkbox-group" id="cp-software-checks">
             <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
             <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
+            <label class="checkbox-item"><input type="checkbox" value="folia"> Folia</label>
             <label class="checkbox-item"><input type="checkbox" value="leaf"> Leaf</label>
             <label class="checkbox-item"><input type="checkbox" value="vanilla"> Vanilla</label>
             <label class="checkbox-item"><input type="checkbox" value="fabric"> Fabric</label>
@@ -543,6 +543,7 @@
           <div class="checkbox-group" id="ip-software-checks">
             <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
             <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
+            <label class="checkbox-item"><input type="checkbox" value="folia"> Folia</label>
             <label class="checkbox-item"><input type="checkbox" value="leaf"> Leaf</label>
             <label class="checkbox-item"><input type="checkbox" value="vanilla"> Vanilla</label>
             <label class="checkbox-item"><input type="checkbox" value="fabric"> Fabric</label>
@@ -593,6 +594,7 @@
           <select id="is-software" class="input">
             <option value="paper">Paper</option>
             <option value="purpur">Purpur</option>
+            <option value="folia">Folia</option>
             <option value="leaf">Leaf</option>
             <option value="vanilla">Vanilla</option>
             <option value="fabric">Fabric</option>
@@ -610,7 +612,7 @@
         </div>
         <div class="form-group">
           <label>RAM Allocation</label>
-          <select id="is-ram" class="input">
+          <select id="is-ram" class="input" onchange="onRamChange('is')">
             <option value="512M">512 MB</option>
             <option value="1G">1 GB</option>
             <option value="2G" selected>2 GB</option>
@@ -619,7 +621,9 @@
             <option value="8G">8 GB</option>
             <option value="12G">12 GB</option>
             <option value="16G">16 GB</option>
+            <option value="custom">Custom...</option>
           </select>
+          <input type="text" id="is-ram-custom" class="input" placeholder="e.g. 3G, 2048M" style="display:none;margin-top:6px">
         </div>
         <div class="form-group full">
           <label>Java Executable</label>
@@ -687,24 +691,174 @@
   </div>
 </div>
 
-<!-- Rename Server Modal -->
-<div class="modal-overlay hidden" id="modal-rename-server">
+<!-- Server Settings Modal -->
+<div class="modal-overlay hidden" id="modal-server-settings">
+  <div class="modal large">
+    <div class="modal-header">
+      <h2>Server Settings</h2>
+      <button class="modal-close" onclick="closeModal('modal-server-settings')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Server Name</label>
+          <input type="text" id="ss-name" class="input" placeholder="My Server">
+        </div>
+        <div class="form-group">
+          <label>RAM Allocation</label>
+          <select id="ss-ram" class="input" onchange="onRamChange('ss')">
+            <option value="512M">512 MB</option>
+            <option value="1G">1 GB</option>
+            <option value="2G">2 GB</option>
+            <option value="4G">4 GB</option>
+            <option value="6G">6 GB</option>
+            <option value="8G">8 GB</option>
+            <option value="12G">12 GB</option>
+            <option value="16G">16 GB</option>
+            <option value="custom">Custom</option>
+          </select>
+          <input type="text" id="ss-ram-custom" class="input" placeholder="e.g. 3G, 2048M" style="display:none;margin-top:6px">
+        </div>
+        <div class="form-group">
+          <label>Storage Limit <span class="label-hint">(optional - 2GB+ recommended)</span></label>
+          <input type="text" id="ss-storage" class="input" placeholder="Unlimited">
+        </div>
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" id="ss-port" class="input" placeholder="25565">
+        </div>
+        <div class="form-group">
+          <label>Group <span class="label-hint">(optional)</span></label>
+          <input type="text" id="ss-group" class="input" placeholder="e.g. Survival, Testing">
+        </div>
+        <div class="form-group full">
+          <label>Java Arguments</label>
+          <input type="text" id="ss-java-args" class="input" placeholder="-XX:+UseG1GC ...">
+        </div>
+        <div class="form-group full">
+          <label>Java Path</label>
+          <div class="input-row">
+            <input type="text" id="ss-java-path" class="input" placeholder="java">
+            <button class="btn-sm" onclick="browseJavaSettings()">Browse</button>
+          </div>
+        </div>
+      </div>
+      <div class="server-tools">
+        <div class="server-tools-title">Tools</div>
+        <div class="tool-row">
+          <div>
+            <div class="tool-label">Duplicate Server</div>
+            <div class="tool-desc">Create an exact copy of this server with all its files.</div>
+          </div>
+          <button class="btn-sm" onclick="openDuplicateServerModal()">Duplicate</button>
+        </div>
+        <div class="tool-row">
+          <div>
+            <div class="tool-label">Create Profile from Server</div>
+            <div class="tool-desc">Save selected files as a reusable profile preset.</div>
+          </div>
+          <button class="btn-sm" onclick="openCreateProfileFromServerModal()">Create Profile</button>
+        </div>
+      </div>
+      <div class="danger-zone">
+        <div class="danger-zone-title">Danger Zone</div>
+        <div class="danger-zone-row">
+          <div>
+            <div class="danger-zone-label">Delete Server</div>
+            <div class="danger-zone-desc">Permanently delete this server and all its files. This cannot be undone.</div>
+          </div>
+          <button class="btn-danger" onclick="closeModal('modal-server-settings');confirmDeleteServer()">Delete</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-server-settings')">Cancel</button>
+      <button class="btn-primary" onclick="saveServerSettings()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- Duplicate Server Modal -->
+<div class="modal-overlay hidden" id="modal-duplicate-server">
   <div class="modal small">
     <div class="modal-header">
-      <h2>Rename Server</h2>
-      <button class="modal-close" onclick="closeModal('modal-rename-server')">
+      <h2>Duplicate Server</h2>
+      <button class="modal-close" onclick="closeModal('modal-duplicate-server')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="form-group full">
-        <label>Server Name</label>
-        <input type="text" id="rename-server-input" class="input" placeholder="My Server" onkeydown="if(event.key==='Enter')executeRenameServer()">
+        <label>New Server Name</label>
+        <input type="text" id="dup-name" class="input" placeholder="Copy of My Server" onkeydown="if(event.key==='Enter')executeDuplicateServer()">
+      </div>
+      <div class="info-box" style="margin-top:12px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        All files will be copied. Remember to update the port in settings to avoid conflicts.
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn-ghost" onclick="closeModal('modal-rename-server')">Cancel</button>
-      <button class="btn-primary" onclick="executeRenameServer()">Rename</button>
+      <button class="btn-ghost" onclick="closeModal('modal-duplicate-server')">Cancel</button>
+      <button class="btn-primary" id="dup-submit" onclick="executeDuplicateServer()">Duplicate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Create Profile from Server Modal -->
+<div class="modal-overlay hidden" id="modal-profile-from-server">
+  <div class="modal large">
+    <div class="modal-header">
+      <h2>Create Profile from Server</h2>
+      <button class="modal-close" onclick="closeModal('modal-profile-from-server')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Profile Name</label>
+          <input type="text" id="pfs-name" class="input" placeholder="My Profile">
+        </div>
+        <div class="form-group full">
+          <label>Description <span class="label-hint">(optional)</span></label>
+          <input type="text" id="pfs-desc" class="input" placeholder="">
+        </div>
+        <div class="form-group full">
+          <label>Restrict to Software <span class="label-hint">(optional — leave empty for any)</span></label>
+          <div class="checkbox-group" id="pfs-software-checks">
+            <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
+            <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
+            <label class="checkbox-item"><input type="checkbox" value="folia"> Folia</label>
+            <label class="checkbox-item"><input type="checkbox" value="leaf"> Leaf</label>
+            <label class="checkbox-item"><input type="checkbox" value="vanilla"> Vanilla</label>
+            <label class="checkbox-item"><input type="checkbox" value="fabric"> Fabric</label>
+            <label class="checkbox-item"><input type="checkbox" value="velocity"> Velocity</label>
+            <label class="checkbox-item"><input type="checkbox" value="spigot"> Spigot</label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label>Restrict to Versions <span class="label-hint">(optional — comma separated, e.g. 1.21.4,1.21.3)</span></label>
+          <input type="text" id="pfs-versions" class="input" placeholder="Leave empty for any version">
+        </div>
+      </div>
+      <div style="margin-top:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <label style="font-size:13px;font-weight:600;color:var(--text-primary)">Select Files</label>
+          <div style="display:flex;gap:6px">
+            <button class="btn-xs" onclick="ftreeSelectAll()">Select All</button>
+            <button class="btn-xs" onclick="ftreeSelectNone()">Deselect All</button>
+          </div>
+        </div>
+        <div class="ftree" id="pfs-ftree">
+          <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:12px">Loading files…</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-profile-from-server')">Cancel</button>
+      <button class="btn-primary" id="pfs-submit" onclick="submitCreateProfileFromServer()">Create Profile</button>
     </div>
   </div>
 </div>
