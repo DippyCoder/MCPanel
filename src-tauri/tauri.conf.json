@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MCPanel",
+  "version": "2.0.0",
+  "identifier": "com.dippycoder.mcpanel",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "MCPanel",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "decorations": false,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["python3", "python3-pip"]
+      },
+      "rpm": {
+        "depends": ["python3", "python3-pip"]
+      }
+    },
+    "category": "Utility"
+  }
+}

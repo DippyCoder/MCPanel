@@ -72,8 +72,9 @@ async function init() {
     document.getElementById('progress-percent').textContent = progress + '%';
   });
 
-  // Silent update check on startup
-  window.mcpanel.checkUpdate().then(result => { if (result.hasUpdate) applyUpdateResult(result); });
+  // Silent update checks on startup — populate status and toast if update found
+  window.mcpanel.checkUpdate().then(result => applyUpdateResult(result));
+  window.mcpanel.checkCliUpdate().then(result => applyCliUpdateResult(result));
 }
 
 // ─── Page Navigation ──────────────────────────────────────────────────────────
@@ -1220,14 +1221,14 @@ function applyUpdateResult(result) {
   const pillEl = document.getElementById('update-pill');
   if (result.hasUpdate) {
     if (statusEl) {
-      statusEl.innerHTML = `<span style="color:var(--yellow)">v${result.latest} available — </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View release</a>`;
+      statusEl.innerHTML = `MCPanel: <span style="color:var(--yellow)">v${result.latest} available — </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View release</a>`;
     }
     if (pillEl) pillEl.classList.remove('hidden');
     toast(`MCPanel v${result.latest} is available on GitHub`, 'info');
   } else if (result.latest) {
-    if (statusEl) statusEl.textContent = `You're on the latest version (v${result.current})`;
+    if (statusEl) statusEl.textContent = `MCPanel: up to date (v${result.current})`;
   } else {
-    if (statusEl) statusEl.textContent = `Could not reach GitHub (v${result.current} installed)`;
+    if (statusEl) statusEl.textContent = `MCPanel: could not reach GitHub (v${result.current} installed)`;
   }
 }
 
@@ -1236,6 +1237,27 @@ async function checkForUpdates() {
   if (statusEl) statusEl.textContent = 'Checking…';
   const result = await window.mcpanel.checkUpdate();
   applyUpdateResult(result);
+}
+
+function applyCliUpdateResult(result) {
+  const statusEl = document.getElementById('cli-update-status-text');
+  if (result.hasUpdate) {
+    if (statusEl) {
+      statusEl.innerHTML = `MCPanel-CLI: <span style="color:var(--yellow)">v${result.latest} available — </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View on GitHub</a>`;
+    }
+    toast(`MCPanel-CLI v${result.latest} is available on PyPI`, 'info');
+  } else if (result.latest) {
+    if (statusEl) statusEl.textContent = `MCPanel-CLI: up to date (v${result.current})`;
+  } else {
+    if (statusEl) statusEl.textContent = result.current ? `MCPanel-CLI: could not reach PyPI (v${result.current} installed)` : 'MCPanel-CLI: could not check version';
+  }
+}
+
+async function checkForCliUpdates() {
+  const statusEl = document.getElementById('cli-update-status-text');
+  if (statusEl) statusEl.textContent = 'Checking…';
+  const result = await window.mcpanel.checkCliUpdate();
+  applyCliUpdateResult(result);
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
