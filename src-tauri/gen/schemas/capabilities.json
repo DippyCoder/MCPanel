@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default MCPanel capabilities","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","opener:allow-open-url","opener:allow-open-path"]}}

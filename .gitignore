@@ -3,3 +3,7 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
+package-lock.json
+
+# Tauri / Rust
+src-tauri/target/

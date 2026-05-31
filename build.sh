@@ -1,143 +1,106 @@
 #!/bin/bash
-# MCPanel Build Script
+# MCPanel Build Script (Tauri)
+# Usage: ./build.sh [appimage|deb|rpm|linux|all|clean]
+#        No argument → interactive menu
+
+set -euo pipefail
 cd "$(dirname "$0")"
 
-echo ""
-echo "  MCPanel Build Tool"
-echo "  ==================="
-echo ""
+OUT_DIR="src-tauri/target/release/bundle"
 
-if ! command -v node &> /dev/null; then
-    echo "[ERROR] Node.js is not installed."
-    echo "        Install from: https://nodejs.org"
-    exit 1
-fi
+ok()  { echo "  [OK]  $*"; }
+err() { echo "  [!!]  $*" >&2; exit 1; }
+msg() { echo "  [*]   $*"; }
 
-echo "[*] Checking for MCPanel updates..."
-CURRENT_VER=$(node -pe "require('./package.json').version" 2>/dev/null || echo "unknown")
-LATEST_VER=$(curl -s "https://api.github.com/repos/DippyCoder/MCPanel/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)
-[ -z "$LATEST_VER" ] && LATEST_VER="unknown"
-echo "    Installed : v$CURRENT_VER"
-echo "    Latest    : $LATEST_VER"
-if [ "$LATEST_VER" = "v$CURRENT_VER" ] || [ "$LATEST_VER" = "$CURRENT_VER" ]; then
-    echo "    Up to date!"
-elif [ "$LATEST_VER" != "unknown" ]; then
-    echo "    [!] Update available > https://github.com/DippyCoder/MCPanel/releases"
-fi
-echo ""
+check_deps() {
+    command -v cargo >/dev/null 2>&1 || err "Rust not found. Install from: https://rustup.rs"
 
-do_install() { npm install; }
+    if ! cargo tauri --version >/dev/null 2>&1; then
+        msg "Tauri CLI not found – installing..."
+        cargo install tauri-cli --version "^2" --locked
+    fi
 
-build_win() {
-    echo "[*] Building Windows  ->  dist/win"
-    do_install && npm run build:win
-    [ $? -eq 0 ] && echo "[OK] Done! Output: dist/win" || echo "[FAILED] Windows build failed."
-}
-
-build_mac() {
-    echo "[*] Building macOS  ->  dist/mac"
-    do_install && npm run build:mac
-    [ $? -eq 0 ] && echo "[OK] Done! Output: dist/mac" || echo "[FAILED] macOS build failed."
-}
-
-build_appimage() {
-    echo "[*] Building Linux AppImage  ->  dist/linux"
-    do_install && npm run build:linux:appimage
-    [ $? -eq 0 ] && echo "[OK] Done! Output: dist/linux" || echo "[FAILED] AppImage build failed."
-}
-
-build_deb() {
-    echo "[*] Building Linux .deb  ->  dist/linux"
-    do_install && npm run build:linux:deb
-    [ $? -eq 0 ] && echo "[OK] Done! Output: dist/linux" || echo "[FAILED] .deb build failed."
-}
-
-build_rpm() {
-    echo "[*] Building Linux .rpm  ->  dist/linux"
-    do_install && npm run build:linux:rpm
-    [ $? -eq 0 ] && echo "[OK] Done! Output: dist/linux" || echo "[FAILED] .rpm build failed."
-}
-
-do_clean() {
-    echo "[*] Cleaning dist folder..."
-    if [ -d dist ]; then
-        rm -rf dist
-        echo "[OK] dist folder cleared."
-    else
-        echo "[*] dist folder is already empty."
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        for pkg in libwebkit2gtk-4.1-dev libssl-dev pkg-config; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || {
+                msg "Installing system dependency: $pkg"
+                sudo apt-get install -y "$pkg"
+            }
+        done
     fi
 }
 
 build_all() {
-    do_install
+    msg "Building Linux packages (AppImage + .deb + .rpm)..."
+    (cd src-tauri && cargo tauri build --bundles appimage,deb,rpm)
     echo ""
-    echo "[1/5] Building Windows  ->  dist/win"
-    npm run build:win; WIN=$?
-    echo ""
-    echo "[2/5] Building macOS  ->  dist/mac"
-    npm run build:mac; MAC=$?
-    echo ""
-    echo "[3/5] Building Linux AppImage  ->  dist/linux"
-    npm run build:linux:appimage; IMG=$?
-    echo ""
-    echo "[4/5] Building Linux .deb  ->  dist/linux"
-    npm run build:linux:deb; DEB=$?
-    echo ""
-    echo "[5/5] Building Linux .rpm  ->  dist/linux"
-    npm run build:linux:rpm; RPM=$?
-    echo ""
-    echo "================================"
-    echo "  Build Summary"
-    echo "================================"
-    [ $WIN -eq 0 ] && echo "  Windows       : [OK]  ->  dist/win"    || echo "  Windows       : [FAILED]"
-    [ $MAC -eq 0 ] && echo "  macOS         : [OK]  ->  dist/mac"    || echo "  macOS         : [FAILED]"
-    [ $IMG -eq 0 ] && echo "  Linux AppImage: [OK]  ->  dist/linux"  || echo "  Linux AppImage: [FAILED]"
-    [ $DEB -eq 0 ] && echo "  Linux .deb    : [OK]  ->  dist/linux"  || echo "  Linux .deb    : [FAILED]"
-    [ $RPM -eq 0 ] && echo "  Linux .rpm    : [OK]  ->  dist/linux"  || echo "  Linux .rpm    : [FAILED]"
-    echo "================================"
+    ok "AppImage  → $OUT_DIR/appimage/"
+    ok ".deb      → $OUT_DIR/deb/"
+    ok ".rpm      → $OUT_DIR/rpm/"
 }
 
-if [ -n "$1" ]; then
+build_appimage() {
+    msg "Building AppImage..."
+    (cd src-tauri && cargo tauri build --bundles appimage)
+    ok "Output: $OUT_DIR/appimage/"
+}
+
+build_deb() {
+    msg "Building .deb package..."
+    (cd src-tauri && cargo tauri build --bundles deb)
+    ok "Output: $OUT_DIR/deb/"
+}
+
+build_rpm() {
+    msg "Building .rpm package..."
+    sudo apt-get install -y rpm >/dev/null 2>&1 || true
+    (cd src-tauri && cargo tauri build --bundles rpm)
+    ok "Output: $OUT_DIR/rpm/"
+}
+
+do_clean() {
+    msg "Cleaning build artifacts (src-tauri/target/)..."
+    rm -rf src-tauri/target
+    ok "Done."
+}
+
+check_deps
+
+if [ -n "${1:-}" ]; then
     case "$1" in
-        win)      build_win ;;
-        mac)      build_mac ;;
-        appimage) build_appimage ;;
-        deb)      build_deb ;;
-        rpm)      build_rpm ;;
-        all)      build_all ;;
-        clean)    do_clean ;;
+        appimage)    build_appimage ;;
+        deb)         build_deb ;;
+        rpm)         build_rpm ;;
+        linux|all)   build_all ;;
+        clean)       do_clean ;;
         *)
-            echo "[ERROR] Unknown argument: $1"
-            echo "Usage: ./build.sh [win|mac|appimage|deb|rpm|all|clean]"
+            echo "Usage: $0 [appimage|deb|rpm|linux|all|clean]"
             exit 1
             ;;
     esac
-    echo ""
     exit 0
 fi
 
-echo "  Select target platform:"
 echo ""
-echo "    [1]  Windows                        ->  dist/win"
-echo "    [2]  macOS                          ->  dist/mac"
-echo "    [3]  Linux  (.AppImage)             ->  dist/linux"
-echo "    [4]  Linux  (.deb - Debian/Ubuntu)  ->  dist/linux"
-echo "    [5]  Linux  (.rpm - Fedora/RHEL)    ->  dist/linux"
-echo "    [6]  All platforms"
-echo "    [7]  Clean dist folder"
+echo "  MCPanel Build Tool (Tauri)"
+echo "  =========================="
 echo ""
-read -p "  Enter choice (1-7): " CHOICE
+echo "    [1]  Linux  (AppImage + .deb + .rpm)   →  $OUT_DIR/"
+echo "    [2]  Linux  AppImage only"
+echo "    [3]  Linux  .deb  (Debian / Ubuntu)"
+echo "    [4]  Linux  .rpm  (Fedora / RHEL)"
+echo "    [5]  Clean build artifacts"
+echo ""
+read -rp "  Enter choice (1-5): " CHOICE
 echo ""
 
 case "$CHOICE" in
-    1) build_win ;;
-    2) build_mac ;;
-    3) build_appimage ;;
-    4) build_deb ;;
-    5) build_rpm ;;
-    6) build_all ;;
-    7) do_clean ;;
-    *) echo "[ERROR] Invalid choice."; exit 1 ;;
+    1) build_all ;;
+    2) build_appimage ;;
+    3) build_deb ;;
+    4) build_rpm ;;
+    5) do_clean ;;
+    *) err "Invalid choice." ;;
 esac
 
 echo ""
