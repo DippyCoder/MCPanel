@@ -38,9 +38,21 @@
   }
 
   // ─── Window controls ─────────────────────────────────────────────────────────
-  function minimize() { window.__TAURI__.window.getCurrent().minimize(); }
-  function maximize() { window.__TAURI__.window.getCurrent().toggleMaximize(); }
-  function close()    { window.__TAURI__.window.getCurrent().close(); }
+  function _currentWindow() {
+    return window.__TAURI__?.window?.getCurrentWindow?.();
+  }
+  function minimize() {
+    const w = _currentWindow();
+    if (w) w.minimize(); else _invoke('plugin:window|minimize');
+  }
+  function maximize() {
+    const w = _currentWindow();
+    if (w) w.toggleMaximize(); else _invoke('plugin:window|toggle_maximize');
+  }
+  function close() {
+    const w = _currentWindow();
+    if (w) w.close(); else _invoke('plugin:window|close');
+  }
 
   // ─── Public API ──────────────────────────────────────────────────────────────
   window.mcpanel = {
@@ -109,6 +121,10 @@
       const result = await cli(['fetch', 'log', '-id', id]);
       return Array.isArray(result) ? result : [];
     },
+
+    // Reads log entries written after `offset` bytes. Returns { lines, offset }.
+    // Used by the 15 ms console poll; bypasses the CLI for low-latency file reads.
+    getLogSince: (id, offset) => _invoke('get_log_since', { id, offset }),
 
     isServerRunning: async (id) => {
       const result = await cli(['fetch', 'status', '-id', id]);
@@ -361,7 +377,7 @@
 
     btn.disabled = true;
     btn.textContent = 'Installing…';
-    if (msgEl) msgEl.textContent = 'Installing mcpanel-cli via pip…';
+    if (msgEl) msgEl.textContent = 'Installing mcpanel-cli from GitHub…';
 
     try {
       const result = await _invoke('install_cli');

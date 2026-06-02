@@ -58,10 +58,38 @@ fn log_to_file(line: &str) {
 
 // ─── CLI runner ───────────────────────────────────────────────────────────────
 
+// AppImage launchers and some desktop environments strip ~/.local/bin from PATH.
+// These helpers prepend the common user-install locations so `mcpanel` (installed
+// via pip --user or pipx) is always found regardless of how the app was launched.
+fn mcpanel_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("mcpanel");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", extra, path));
+    // AppImage bundles its own Python and exports PYTHONHOME/PYTHONPATH pointing
+    // inside the AppImage. Those break the system-installed mcpanel CLI because
+    // Python can't find its standard library (encodings, etc.). Unset them so the
+    // system Python is used when mcpanel is invoked.
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    cmd
+}
+
+fn mcpanel_async_cmd() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("mcpanel");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", extra, path));
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    cmd
+}
 
 #[tauri::command]
 pub fn check_cli() -> Value {
-    match std::process::Command::new("mcpanel")
+    match mcpanel_cmd()
         .args(["api", "version"])
         .output()
     {
@@ -83,7 +111,7 @@ pub fn check_cli() -> Value {
         Err(e) => serde_json::json!({
             "ok": false,
             "error": format!(
-                "mcpanel CLI not found.\nInstall it with:  pip install mcpanel-cli\n({})",
+                "mcpanel CLI not found.\nInstall it with:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git\n({})",
                 e
             )
         }),
@@ -96,7 +124,7 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     argv.extend(args);
     log_to_file(&format!("run_cli: mcpanel {}", argv.join(" ")));
 
-    let out = std::process::Command::new("mcpanel")
+    let out = mcpanel_cmd()
         .args(&argv)
         .output()
         .map_err(|e| format!("Failed to run mcpanel: {}", e))?;
@@ -415,7 +443,7 @@ pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, 
         }
     });
 
-    let out = tokio::process::Command::new("mcpanel")
+    let out = mcpanel_async_cmd()
         .args(&argv)
         .output()
         .await
@@ -468,7 +496,7 @@ pub async fn import_server_cmd(args: Vec<String>, app: AppHandle) -> Result<Stri
     let mut argv = vec!["api".into(), "import".into(), "server".into()];
     argv.extend(args);
 
-    let out = tokio::process::Command::new("mcpanel")
+    let out = mcpanel_async_cmd()
         .args(&argv)
         .output()
         .await
@@ -674,6 +702,46 @@ fn rewrite_css_urls(css: &str, theme_dir: &str) -> String {
     result
 }
 
+// ─── Direct log read (used by 15 ms console poll) ────────────────────────────
+
+#[tauri::command]
+pub async fn get_log_since(id: String, offset: u64) -> Value {
+    use std::io::SeekFrom;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let log_path = format!("{}/{}.log.jsonl", mcpanel_run_dir(), id);
+
+    let mut file = match tokio::fs::File::open(&log_path).await {
+        Ok(f) => f,
+        Err(_) => return serde_json::json!({"lines": [], "offset": 0}),
+    };
+
+    let total = match file.metadata().await {
+        Ok(m) => m.len(),
+        Err(_) => return serde_json::json!({"lines": [], "offset": offset}),
+    };
+
+    // File was truncated or rotated — restart from the beginning.
+    let seek_to = if offset > total { 0 } else { offset };
+
+    if seek_to > 0 {
+        let _ = file.seek(SeekFrom::Start(seek_to)).await;
+    }
+
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).await.is_err() {
+        return serde_json::json!({"lines": [], "offset": offset});
+    }
+
+    let lines: Vec<Value> = buf
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+
+    serde_json::json!({"lines": lines, "offset": total})
+}
+
 // ─── App info ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -736,21 +804,21 @@ fn filepath_to_string(p: tauri_plugin_dialog::FilePath) -> String {
 
 #[tauri::command]
 pub async fn install_cli() -> Result<String, String> {
-    // Try pip3 --user first, then pip --user
+    const GITHUB_URL: &str = "git+https://github.com/DippyCoder/mcpanel-cli.git";
     for pip in &["pip3", "pip"] {
         let out = tokio::process::Command::new(pip)
-            .args(["install", "--user", "mcpanel-cli"])
+            .args(["install", "--user", GITHUB_URL])
             .output()
             .await;
         match out {
             Ok(o) if o.status.success() => {
-                log_to_file("install_cli: mcpanel-cli installed via pip");
+                log_to_file("install_cli: mcpanel-cli installed from GitHub");
                 return Ok("mcpanel-cli installed successfully".into());
             }
             _ => continue,
         }
     }
-    Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install mcpanel-cli".into())
+    Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git".into())
 }
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────

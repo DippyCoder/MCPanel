@@ -37,6 +37,7 @@ pub fn run() {
             commands::browse_file,
             commands::install_cli,
             commands::get_app_log_path,
+            commands::get_log_since,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

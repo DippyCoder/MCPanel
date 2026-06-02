@@ -6,6 +6,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# linuxdeploy (used by Tauri's AppImage bundler) is itself an AppImage.
+# On Fedora / systems without FUSE mounted, it must extract and run without FUSE.
+export APPIMAGE_EXTRACT_AND_RUN=1
+
+# linuxdeploy bundles its own ancient `strip` binary that can't parse the
+# `.relr.dyn` ELF section type used by Fedora 43+ libraries. Skip stripping
+# to avoid the build failure; the AppImage is slightly larger but works fine.
+export NO_STRIP=1
+
 OUT_DIR="src-tauri/target/release/bundle"
 
 ok()  { echo "  [OK]  $*"; }
@@ -21,12 +30,31 @@ check_deps() {
     fi
 
     if [[ "$(uname -s)" == "Linux" ]]; then
-        for pkg in libwebkit2gtk-4.1-dev libssl-dev pkg-config; do
-            dpkg -s "$pkg" >/dev/null 2>&1 || {
-                msg "Installing system dependency: $pkg"
-                sudo apt-get install -y "$pkg"
-            }
-        done
+        if command -v dnf >/dev/null 2>&1; then
+            # Fedora / RHEL / openSUSE (dnf)
+            DNF_PKGS=(webkit2gtk4.1-devel openssl-devel pkg-config gcc
+                      libappindicator-gtk3-devel librsvg2-devel rpm-build fuse fuse-libs)
+            MISSING=()
+            for pkg in "${DNF_PKGS[@]}"; do
+                rpm -q "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
+            done
+            if [[ ${#MISSING[@]} -gt 0 ]]; then
+                msg "Installing system dependencies via dnf: ${MISSING[*]}"
+                sudo dnf install -y "${MISSING[@]}"
+            fi
+        elif command -v apt-get >/dev/null 2>&1; then
+            # Debian / Ubuntu (apt)
+            APT_PKGS=(libwebkit2gtk-4.1-dev libssl-dev pkg-config gcc
+                      libappindicator3-dev librsvg2-dev rpm fuse libfuse2)
+            for pkg in "${APT_PKGS[@]}"; do
+                dpkg -s "$pkg" >/dev/null 2>&1 || {
+                    msg "Installing system dependency: $pkg"
+                    sudo apt-get install -y "$pkg"
+                }
+            done
+        else
+            msg "Unknown package manager — make sure webkit2gtk4.1-devel, openssl-devel and pkg-config are installed."
+        fi
     fi
 }
 

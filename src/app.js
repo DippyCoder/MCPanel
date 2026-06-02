@@ -15,6 +15,9 @@ let startingServers = new Set();
 let serverStartTimes = {};
 let pendingEulaServerId = null;
 let consoleAutoScroll = true;
+let consoleLogOffset = 0;
+let consolePollInterval = null;
+let detailStatsInterval = null;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -47,10 +50,6 @@ async function init() {
   setupConsoleScroll();
 
   // Event listeners
-  window.mcpanel.on('server-log', ({ id, line, type }) => {
-    if (id === currentServerId) appendConsoleLine(line, type);
-  });
-
   window.mcpanel.on('server-stopped', ({ id }) => {
     startingServers.delete(id);
     delete serverStartTimes[id];
@@ -79,6 +78,8 @@ async function init() {
 
 // ─── Page Navigation ──────────────────────────────────────────────────────────
 function showPage(page) {
+  stopConsolePoll();
+  if (detailStatsInterval) { clearInterval(detailStatsInterval); detailStatsInterval = null; }
   document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
   document.getElementById('page-' + page).classList.remove('hidden');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -117,14 +118,16 @@ function openServerDetail(id) {
   document.getElementById('quick-java-path').value = srv.javaPath || 'java';
   document.getElementById('quick-group').value = srv.group || '';
 
-  // Load console history
+  // Load console history then start 15 ms poll for live updates
   consoleAutoScroll = true;
   document.getElementById('autoscroll-banner').classList.add('hidden');
   const logEl = document.getElementById('console-output');
   logEl.innerHTML = '';
-  const existingLog = window.mcpanel.getServerLog ? [] : [];
-  window.mcpanel.getServerLog(id).then(log => {
-    log.forEach(entry => appendConsoleLine(entry.text, entry.type));
+  stopConsolePoll();
+  window.mcpanel.getLogSince(id, 0).then(result => {
+    consoleLogOffset = result.offset || 0;
+    (result.lines || []).forEach(entry => appendConsoleLine(entry.text || '', entry.type || 'out'));
+    startConsolePoll(id);
   });
 
   // Check running state
@@ -139,19 +142,28 @@ function openServerDetail(id) {
     detailUptime.textContent = serverStartTimes[id] ? formatUptime(Date.now() - serverStartTimes[id]) : '—';
   }
 
-  // Storage stats (async)
-  window.mcpanel.getServerDirStats(id).then(({ size }) => {
-    const storageEl = document.getElementById('detail-storage');
-    const used = formatBytes(size);
-    if (srv.storageLimit) {
-      storageEl.textContent = `${used} / ${srv.storageLimit}`;
-      const limitBytes = parseStorageLimit(srv.storageLimit);
-      storageEl.style.color = (limitBytes !== null && size > limitBytes) ? 'var(--red)' : '';
-    } else {
-      storageEl.textContent = used;
-      storageEl.style.color = '';
-    }
-  });
+  // Storage stats — load immediately then refresh every 5 s
+  refreshDetailStats(id);
+  if (detailStatsInterval) clearInterval(detailStatsInterval);
+  detailStatsInterval = setInterval(() => refreshDetailStats(currentServerId), 5000);
+}
+
+async function refreshDetailStats(id) {
+  if (!id) return;
+  const srv = config.servers.find(s => s.id === id);
+  if (!srv) return;
+  const { size } = await window.mcpanel.getServerDirStats(id);
+  const storageEl = document.getElementById('detail-storage');
+  if (!storageEl) return;
+  const used = formatBytes(size);
+  if (srv.storageLimit) {
+    storageEl.textContent = `${used} / ${srv.storageLimit}`;
+    const limitBytes = parseStorageLimit(srv.storageLimit);
+    storageEl.style.color = (limitBytes !== null && size > limitBytes) ? 'var(--red)' : '';
+  } else {
+    storageEl.textContent = used;
+    storageEl.style.color = '';
+  }
 }
 
 // ─── Servers Grid ─────────────────────────────────────────────────────────────
@@ -594,6 +606,21 @@ function ansiToHtml(text) {
   if (lastIdx < text.length) html += escapeHtml(text.slice(lastIdx));
   if (openSpan) html += '</span>';
   return html;
+}
+
+// ─── Console Poll ─────────────────────────────────────────────────────────────
+function startConsolePoll(id) {
+  consolePollInterval = setInterval(async () => {
+    if (id !== currentServerId) { stopConsolePoll(); return; }
+    const result = await window.mcpanel.getLogSince(id, consoleLogOffset);
+    if (!result || id !== currentServerId) return;
+    consoleLogOffset = result.offset;
+    (result.lines || []).forEach(entry => appendConsoleLine(entry.text || '', entry.type || 'out'));
+  }, 15);
+}
+
+function stopConsolePoll() {
+  if (consolePollInterval) { clearInterval(consolePollInterval); consolePollInterval = null; }
 }
 
 // ─── Console Autoscroll ───────────────────────────────────────────────────────
