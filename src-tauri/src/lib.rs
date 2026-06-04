@@ -12,6 +12,10 @@ pub fn run() {
                 log_streamers: Mutex::new(HashMap::new()),
                 app_handle: handle,
             });
+            app.manage(commands::PtyState {
+                master: Mutex::new(None),
+                writer: Mutex::new(None),
+            });
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -38,6 +42,21 @@ pub fn run() {
             commands::install_cli,
             commands::get_app_log_path,
             commands::get_log_since,
+            commands::open_terminal,
+            commands::write_server_file,
+            commands::upload_files_to_server,
+            commands::delete_server_file,
+            commands::create_server_dir,
+            commands::create_server_file,
+            commands::rename_server_file,
+            commands::read_server_file,
+            commands::pty_open,
+            commands::pty_write,
+            commands::pty_resize,
+            commands::pty_close,
+            commands::get_server_start_time,
+            commands::check_first_start_flag,
+            commands::quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

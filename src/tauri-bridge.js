@@ -7,7 +7,8 @@
 (function () {
   // Tauri v2 with withGlobalTauri:true exposes window.__TAURI_INTERNALS__
   const _invoke = (...a) => window.__TAURI_INTERNALS__.invoke(...a);
-  const _listen = (...a) => window.__TAURI_INTERNALS__.listen(...a);
+  // In Tauri v2, listen is on window.__TAURI__.event, not __TAURI_INTERNALS__
+  const _listen = (...a) => window.__TAURI__.event.listen(...a);
 
   // ─── CLI helper ─────────────────────────────────────────────────────────────
   async function cli(args) {
@@ -50,8 +51,7 @@
     if (w) w.toggleMaximize(); else _invoke('plugin:window|toggle_maximize');
   }
   function close() {
-    const w = _currentWindow();
-    if (w) w.close(); else _invoke('plugin:window|close');
+    _invoke('quit_app');
   }
 
   // ─── Public API ──────────────────────────────────────────────────────────────
@@ -211,6 +211,36 @@
 
     getServerFileTree: (id) => cli(['fetch', 'files', '-id', id]),
 
+    openTerminal: () => _invoke('open_terminal'),
+    ptyOpen: () => _invoke('pty_open'),
+    ptyWrite: (data) => _invoke('pty_write', { data }),
+    ptyResize: (rows, cols) => _invoke('pty_resize', { rows, cols }),
+    ptyClose: () => _invoke('pty_close'),
+
+    getServerStartTime: (id) => _invoke('get_server_start_time', { id }),
+    checkFirstStartFlag: () => _invoke('check_first_start_flag'),
+
+    writeServerFile: (id, relPath, data) =>
+      _invoke('write_server_file', { id, relPath, data }),
+
+    uploadFilesFromPaths: (id, srcPaths, destDir) =>
+      _invoke('upload_files_to_server', { id, srcPaths, destDir }),
+
+    deleteServerFile: (id, relPath) =>
+      _invoke('delete_server_file', { id, relPath }),
+
+    createServerDir: (id, relPath) =>
+      _invoke('create_server_dir', { id, relPath }),
+
+    createServerFile: (id, relPath) =>
+      _invoke('create_server_file', { id, relPath }),
+
+    renameServerFile: (id, oldPath, newPath) =>
+      _invoke('rename_server_file', { id, oldPath, newPath }),
+
+    readServerFile: (id, relPath) =>
+      _invoke('read_server_file', { id, relPath }),
+
     createProfileFromServer: async (id, profileData, selectedPaths) => {
       const args = [
         '-id', id,
@@ -236,8 +266,8 @@
     getSystemInfo: async () => {
       try {
         const result = await cli(['system']);
-        return result || { totalRam: null, availableStorage: null };
-      } catch { return { totalRam: null, availableStorage: null }; }
+        return result || { totalRam: null, availableStorage: null, totalStorage: null };
+      } catch { return { totalRam: null, availableStorage: null, totalStorage: null }; }
     },
 
     checkUpdate: async () => {

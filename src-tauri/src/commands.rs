@@ -10,6 +10,11 @@ pub struct AppState {
     pub app_handle: AppHandle,
 }
 
+pub struct PtyState {
+    pub master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
+    pub writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+}
+
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 
 pub fn mcpanel_home() -> String {
@@ -821,9 +826,273 @@ pub async fn install_cli() -> Result<String, String> {
     Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git".into())
 }
 
+// ─── File upload ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn write_server_file(id: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&dest, &data).map_err(|e| e.to_string())
+}
+
+// ─── Open terminal in MCPanel home dir ───────────────────────────────────────
+
+#[tauri::command]
+pub fn open_terminal() -> Result<(), String> {
+    let dir = mcpanel_home();
+    let _ = std::fs::create_dir_all(&dir);
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    let full_path = format!("{}:{}", extra, path);
+
+    // (terminal, dir-flag) – empty string means use current_dir only
+    let candidates: &[(&str, &[&str])] = &[
+        ("gnome-terminal", &["--working-directory"]),
+        ("konsole",        &["--workdir"]),
+        ("xfce4-terminal", &["--working-directory"]),
+        ("alacritty",      &["--working-directory"]),
+        ("kitty",          &[]),
+        ("wezterm",        &["start", "--cwd"]),
+        ("xterm",          &[]),
+        ("x-terminal-emulator", &[]),
+    ];
+
+    for (term, flags) in candidates {
+        let mut cmd = std::process::Command::new(term);
+        cmd.current_dir(&dir).env("PATH", &full_path);
+        for flag in *flags {
+            cmd.arg(flag);
+        }
+        // flags that take the dir as the next arg need the dir appended
+        if !flags.is_empty() && *flags.last().unwrap() != "start" {
+            cmd.arg(&dir);
+        }
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+    }
+
+    Err("No terminal emulator found. Install gnome-terminal, konsole, or xterm.".into())
+}
+
+// ─── Drag-drop upload (Tauri intercepts OS drops, gives us paths) ─────────────
+
+#[tauri::command]
+pub fn upload_files_to_server(id: String, src_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    if !dest_dir.is_empty() && (dest_dir.contains("..") || dest_dir.starts_with('/')) {
+        return Err("Invalid destination path".into());
+    }
+    let server_dir = get_server_dir(&id)?;
+    let base = std::path::Path::new(&server_dir);
+    let dest_base = if dest_dir.is_empty() { base.to_path_buf() } else { base.join(&dest_dir) };
+    std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
+    for src_path in &src_paths {
+        let src = std::path::Path::new(src_path);
+        if src.is_file() {
+            if let Some(name) = src.file_name() {
+                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ─── File operations ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn delete_server_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    if !target.exists() {
+        return Err("File not found".into());
+    }
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(&target).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn create_server_dir(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    std::fs::create_dir_all(&target).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_server_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if dest.exists() {
+        return Err("A file with that name already exists".into());
+    }
+    std::fs::write(&dest, "").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_server_file(id: String, old_path: String, new_path: String) -> Result<(), String> {
+    if old_path.contains("..") || old_path.starts_with('/')
+        || new_path.contains("..") || new_path.starts_with('/')
+    {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let base = std::path::Path::new(&dir);
+    let src = base.join(&old_path);
+    let dst = base.join(&new_path);
+    if !src.exists() {
+        return Err("Source not found".into());
+    }
+    if dst.exists() {
+        return Err("A file with that name already exists".into());
+    }
+    std::fs::rename(&src, &dst).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn read_server_file(id: String, rel_path: String) -> Result<String, String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    let metadata = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if metadata.len() > 5 * 1024 * 1024 {
+        return Err("File too large to edit in-app (max 5MB)".into());
+    }
+    std::fs::read_to_string(&target).map_err(|_| "File is binary or cannot be read as text".into())
+}
+
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_app_log_path() -> String {
     app_log_path()
+}
+
+// ─── Server start time (reads run/<id>.json directly, no CLI round-trip) ─────
+
+#[tauri::command]
+pub fn get_server_start_time(id: String) -> Option<u64> {
+    let path = format!("{}/{}.json", mcpanel_run_dir(), id);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let v: Value = serde_json::from_str(&content).ok()?;
+    v["started"].as_u64()
+}
+
+// ─── First-start debug flag ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn check_first_start_flag() -> bool {
+    let flag = format!("{}/debug_first_start", mcpanel_home());
+    if std::path::Path::new(&flag).exists() {
+        let _ = std::fs::remove_file(&flag);
+        true
+    } else {
+        false
+    }
+}
+
+// ─── Embedded PTY terminal ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn pty_open(app: AppHandle, state: tauri::State<'_, PtyState>) -> Result<(), String> {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::Read;
+
+    *state.master.lock().unwrap() = None;
+    *state.writer.lock().unwrap() = None;
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+
+    let mut cmd = CommandBuilder::new("bash");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", extra, path));
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    cmd.cwd(mcpanel_home());
+
+    let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+    *state.master.lock().unwrap() = Some(pair.master);
+    *state.writer.lock().unwrap() = Some(writer);
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = app2.emit("pty-data", data);
+                }
+            }
+        }
+        let _ = app2.emit("pty-closed", ());
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_write(data: String, state: tauri::State<'_, PtyState>) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(w) = state.writer.lock().unwrap().as_mut() {
+        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_resize(rows: u16, cols: u16, state: tauri::State<'_, PtyState>) -> Result<(), String> {
+    use portable_pty::PtySize;
+    if let Some(m) = state.master.lock().unwrap().as_ref() {
+        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_close(state: tauri::State<'_, PtyState>) {
+    *state.master.lock().unwrap() = None;
+    *state.writer.lock().unwrap() = None;
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
