@@ -57,6 +57,17 @@ pub fn run() {
             commands::get_server_start_time,
             commands::check_first_start_flag,
             commands::quit_app,
+            commands::get_velocity_secret,
+            commands::get_system_stats,
+            commands::get_default_theme,
+            commands::set_default_theme,
+            commands::theme_exists,
+            commands::install_builtin_theme,
+            commands::get_themes,
+            commands::delete_theme,
+            commands::fetch_github_themes,
+            commands::install_theme_from_file,
+            commands::install_theme_from_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

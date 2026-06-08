@@ -1,9 +1,9 @@
 {
-  "name": "Bright Slate",
+  "name": "Purple Dark",
   "creator": "DippyCoder",
   "creatorUrl": "https://github.com/DippyCoder",
-  "version": "1.0.1",
+  "version": "2.1.1",
   "appVersion": "2.1.1",
-  "description": "A clean light theme with blue accents.",
+  "description": "The original MCPanel look — dark with purple accents.",
   "builtin": true
 }

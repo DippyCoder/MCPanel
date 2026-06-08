@@ -73,6 +73,37 @@
       </button>
     </div>
     <div class="sidebar-servers" id="sidebar-servers"></div>
+
+    <!-- Sidebar Stats -->
+    <div class="sidebar-stats" id="sidebar-stats">
+      <div class="sidebar-stats-title">System</div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">Servers</span>
+        <span class="sidebar-stat-value" id="stat-servers">—</span>
+      </div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">RAM</span>
+        <div class="sidebar-stat-bar-wrap">
+          <div class="sidebar-stat-bar-fill" id="stat-ram-bar" style="width:0%"></div>
+        </div>
+        <span class="sidebar-stat-value" id="stat-ram">—</span>
+      </div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">CPU</span>
+        <div class="sidebar-stat-bar-wrap">
+          <div class="sidebar-stat-bar-fill" id="stat-cpu-bar" style="width:0%"></div>
+        </div>
+        <span class="sidebar-stat-value" id="stat-cpu">—</span>
+      </div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">Storage</span>
+        <div class="sidebar-stat-bar-wrap">
+          <div class="sidebar-stat-bar-fill" id="stat-storage-bar" style="width:0%"></div>
+        </div>
+        <span class="sidebar-stat-value" id="stat-storage">—</span>
+      </div>
+    </div>
+
     <div class="sidebar-footer">
       <div class="sidebar-footer-icons">
         <button class="sidebar-icon-btn" title="Open Terminal in MCPanel directory" onclick="openTerminal()">
@@ -370,6 +401,20 @@
             </div>
           </div>
 
+          <!-- Velocity Quick Options (shown only for Velocity servers) -->
+          <div class="card hidden" id="velocity-quick-options">
+            <div class="card-header"><div class="card-title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              Velocity
+            </div></div>
+            <div class="action-list">
+              <button class="action-item" onclick="copyVelocitySecret()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="11" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Forwarding Secret
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
@@ -461,7 +506,7 @@
           <p class="section-desc">Customize the look and feel of MCPanel</p>
           <div class="active-theme-bar" id="active-theme-bar">
             <span class="active-theme-label">Active theme:</span>
-            <span class="active-theme-name" id="active-theme-name">Default (Purple Dark)</span>
+            <span class="active-theme-name" id="active-theme-name">Clean Dark</span>
             <button class="btn-xs" id="reset-theme-btn" onclick="resetTheme()" style="display:none">Reset to Default</button>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">

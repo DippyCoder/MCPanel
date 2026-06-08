@@ -198,17 +198,25 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
         }
     }
 
-    // Update server.properties if port changed
+    // Update config file if port changed
     if let Some(port) = updates.get("port").and_then(|p| p.as_i64()) {
         if let Some(dir) = srv["dir"].as_str() {
-            let props_file = format!("{}/server.properties", dir);
-            if let Ok(contents) = std::fs::read_to_string(&props_file) {
-                let re = format!("server-port={}", port);
-                let updated = if contents.contains("server-port=") {
+            let software = srv["software"].as_str().unwrap_or("");
+            if software == "velocity" {
+                // Velocity: update bind = "host:port" in velocity.toml
+                let toml_file = format!("{}/velocity.toml", dir);
+                let new_bind = format!("bind = \"0.0.0.0:{}\"", port);
+                let contents = std::fs::read_to_string(&toml_file).unwrap_or_default();
+                let has_bind = contents.lines().any(|l| {
+                    let t = l.trim();
+                    t.starts_with("bind") && t.contains('=') && t.contains('"')
+                });
+                let updated = if has_bind {
                     let mut result = String::new();
                     for line in contents.lines() {
-                        if line.starts_with("server-port=") {
-                            result.push_str(&re);
+                        let t = line.trim();
+                        if t.starts_with("bind") && t.contains('=') && t.contains('"') {
+                            result.push_str(&new_bind);
                         } else {
                             result.push_str(line);
                         }
@@ -216,9 +224,30 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
                     }
                     result
                 } else {
-                    format!("{}\n{}\n", contents.trim_end(), re)
+                    format!("{}\n{}\n", new_bind, contents.trim_end())
                 };
-                let _ = std::fs::write(&props_file, updated);
+                let _ = std::fs::write(&toml_file, updated);
+            } else {
+                // Standard servers: update server-port in server.properties
+                let props_file = format!("{}/server.properties", dir);
+                if let Ok(contents) = std::fs::read_to_string(&props_file) {
+                    let re = format!("server-port={}", port);
+                    let updated = if contents.contains("server-port=") {
+                        let mut result = String::new();
+                        for line in contents.lines() {
+                            if line.starts_with("server-port=") {
+                                result.push_str(&re);
+                            } else {
+                                result.push_str(line);
+                            }
+                            result.push('\n');
+                        }
+                        result
+                    } else {
+                        format!("{}\n{}\n", contents.trim_end(), re)
+                    };
+                    let _ = std::fs::write(&props_file, updated);
+                }
             }
         }
     }
@@ -633,6 +662,190 @@ pub async fn ping_server(host: String, port: u16) -> Value {
         }
     }
     serde_json::json!({"online": false})
+}
+
+// ─── Theme management ─────────────────────────────────────────────────────────
+
+fn default_theme_path() -> String {
+    format!("{}/default-theme", mcpanel_home())
+}
+
+#[tauri::command]
+pub fn get_default_theme() -> String {
+    let path = default_theme_path();
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    let _ = std::fs::write(&path, "clean-dark");
+    "clean-dark".to_string()
+}
+
+#[tauri::command]
+pub fn set_default_theme(id: String) -> Result<(), String> {
+    std::fs::write(default_theme_path(), &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn theme_exists(id: String) -> bool {
+    std::path::Path::new(&format!("{}/{}/theme.json", mcpanel_themes_dir(), id)).exists()
+}
+
+#[tauri::command]
+pub fn install_builtin_theme(id: String, css: String, json: String) -> Result<(), String> {
+    let dir = format!("{}/{}", mcpanel_themes_dir(), id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{}/theme.css", dir), css).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{}/theme.json", dir), json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_themes() -> Vec<Value> {
+    let themes_dir = mcpanel_themes_dir();
+    let mut themes: Vec<Value> = Vec::new();
+    let entries = match std::fs::read_dir(&themes_dir) {
+        Ok(e) => e,
+        Err(_) => return themes,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("._") || name.starts_with("_tmp_") || name.starts_with("_download_") {
+            continue;
+        }
+        let meta_path = format!("{}/{}/theme.json", themes_dir, name);
+        if !std::path::Path::new(&meta_path).exists() {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(&meta_path) {
+            if let Ok(mut meta) = serde_json::from_str::<Value>(&raw) {
+                meta["id"] = Value::String(name.clone());
+                meta["dir"] = Value::String(format!("{}/{}", themes_dir, name));
+                themes.push(meta);
+            }
+        }
+    }
+    themes
+}
+
+#[tauri::command]
+pub fn delete_theme(id: String) -> Result<(), String> {
+    let dir = format!("{}/{}", mcpanel_themes_dir(), id);
+    if std::path::Path::new(&dir).exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fetch_github_themes() -> Value {
+    let url = "https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/themes-index.json";
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "10", url])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let body = String::from_utf8_lossy(&o.stdout);
+            serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({"themes": []}))
+        }
+        _ => serde_json::json!({"themes": [], "error": "Failed to fetch themes"}),
+    }
+}
+
+#[tauri::command]
+pub fn install_theme_from_file(path: String) -> Result<Value, String> {
+    _install_theme_zip(&path)
+}
+
+#[tauri::command]
+pub fn install_theme_from_url(url: String) -> Result<Value, String> {
+    let themes_dir = mcpanel_themes_dir();
+    std::fs::create_dir_all(&themes_dir).map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tmp = format!("{}/._download_{}.zip", themes_dir, ts);
+    let status = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "60", "-o", &tmp, &url])
+        .status()
+        .map_err(|e| e.to_string())?;
+    let result = if status.success() {
+        _install_theme_zip(&tmp)
+    } else {
+        Err("Download failed".to_string())
+    };
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+fn _install_theme_zip(zip_path: &str) -> Result<Value, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+
+    // Find theme.json and read it
+    let (meta_str, meta_idx) = {
+        let mut found = None;
+        for i in 0..archive.len() {
+            let name = archive.by_index(i).map_err(|e| e.to_string())?.name().to_string();
+            if name.ends_with("theme.json") && !name.starts_with("__MACOSX") {
+                found = Some(i);
+                break;
+            }
+        }
+        let idx = found.ok_or_else(|| "theme.json not found in archive".to_string())?;
+        let mut f = archive.by_index(idx).map_err(|e| e.to_string())?;
+        let mut s = String::new();
+        f.read_to_string(&mut s).map_err(|e| e.to_string())?;
+        (s, idx)
+    };
+
+    let meta: Value = serde_json::from_str(&meta_str)
+        .map_err(|e| format!("Invalid theme.json: {}", e))?;
+    if meta["name"].as_str().unwrap_or("").is_empty() {
+        return Err("theme.json must include a name field".to_string());
+    }
+
+    // Find the directory prefix that contains theme.json
+    let prefix = {
+        let name = archive.by_index(meta_idx).map_err(|e| e.to_string())?.name().to_string();
+        name[..name.len() - "theme.json".len()].to_string()
+    };
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tid = format!("theme_{}", ts);
+    let theme_dir = format!("{}/{}", mcpanel_themes_dir(), tid);
+    std::fs::create_dir_all(&theme_dir).map_err(|e| e.to_string())?;
+
+    // Re-open archive to extract
+    let file2 = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive2 = zip::ZipArchive::new(file2).map_err(|e| e.to_string())?;
+    for i in 0..archive2.len() {
+        let mut entry = archive2.by_index(i).map_err(|e| e.to_string())?;
+        let raw_name = entry.name().to_string();
+        if raw_name.starts_with("__MACOSX") || raw_name.ends_with('/') {
+            continue;
+        }
+        let rel = if raw_name.starts_with(&prefix) { &raw_name[prefix.len()..] } else { &raw_name };
+        if rel.is_empty() { continue; }
+        let dest = format!("{}/{}", theme_dir, rel);
+        if let Some(parent) = std::path::Path::new(&dest).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        std::fs::write(&dest, buf).map_err(|e| e.to_string())?;
+    }
+
+    let mut result = meta.clone();
+    result["id"] = Value::String(tid);
+    result["dir"] = Value::String(theme_dir);
+    Ok(serde_json::json!({"success": true, "theme": result}))
 }
 
 // ─── Theme CSS ────────────────────────────────────────────────────────────────
@@ -1095,4 +1308,108 @@ pub fn pty_close(state: tauri::State<'_, PtyState>) {
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+// ─── Velocity forwarding secret ───────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_velocity_secret(id: String) -> Value {
+    let dir = match get_server_dir(&id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+
+    // Modern Velocity: forwarding-secret in velocity.toml
+    let toml_path = format!("{}/velocity.toml", dir);
+    if let Ok(contents) = std::fs::read_to_string(&toml_path) {
+        // Check forwarding-secret-file directive first
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let fname = &t[s + 1..s + 1 + e];
+                        let file_path = format!("{}/{}", dir, fname);
+                        if let Ok(secret) = std::fs::read_to_string(&file_path) {
+                            let secret = secret.trim().to_string();
+                            if !secret.is_empty() {
+                                return serde_json::json!({"secret": secret});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Inline forwarding-secret = "value"
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret") && !t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let secret = &t[s + 1..s + 1 + e];
+                        if !secret.is_empty() {
+                            return serde_json::json!({"secret": secret});
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Legacy Velocity: forwarding.secret plain-text file
+    let secret_path = format!("{}/forwarding.secret", dir);
+    if let Ok(secret) = std::fs::read_to_string(&secret_path) {
+        let secret = secret.trim().to_string();
+        if !secret.is_empty() {
+            return serde_json::json!({"secret": secret});
+        }
+    }
+
+    serde_json::json!({"error": "Forwarding secret not found. Check velocity.toml or forwarding.secret."})
+}
+
+// ─── System stats (RAM + CPU load) ───────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_system_stats() -> Value {
+    let mut total_ram: u64 = 0;
+    let mut avail_ram: u64 = 0;
+
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        for line in meminfo.lines() {
+            if line.starts_with("MemTotal:") {
+                if let Some(kb) = line.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                    total_ram = kb * 1024;
+                }
+            } else if line.starts_with("MemAvailable:") {
+                if let Some(kb) = line.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                    avail_ram = kb * 1024;
+                }
+            }
+        }
+    }
+
+    let load1m: f64 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|n| n.parse().ok()))
+        .unwrap_or(0.0);
+
+    let cpu_count = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("processor"))
+        .count()
+        .max(1);
+
+    let cpu_pct = ((load1m / cpu_count as f64) * 1000.0).round() / 10.0;
+    let cpu_pct = cpu_pct.min(100.0);
+    let used_ram = total_ram.saturating_sub(avail_ram);
+
+    serde_json::json!({
+        "totalRam": total_ram,
+        "availRam": avail_ram,
+        "usedRam": used_ram,
+        "cpuPct": cpu_pct,
+        "loadAvg": load1m,
+    })
 }

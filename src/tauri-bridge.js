@@ -260,6 +260,12 @@
       return JSON.parse(raw);
     },
 
+    // Velocity
+    getVelocitySecret: (id) => _invoke('get_velocity_secret', { id }),
+
+    // System stats (RAM + CPU — for sidebar stats panel)
+    getSystemStats: () => _invoke('get_system_stats'),
+
     // System info
     getVersion: () => _invoke('get_app_version'),
 
@@ -310,31 +316,22 @@
       return { success: true };
     },
 
-    // Themes
-    getThemes: async () => {
-      const result = await cli(['list', 'themes']);
-      return Array.isArray(result) ? result : (result.themes || []);
-    },
-
+    // Themes — all handled natively in Rust, no CLI involvement
+    getThemes: () => _invoke('get_themes'),
     getThemeCss: (id) => _invoke('get_theme_css', { id }),
-
-    installThemeUrl: (url) =>
-      cli(['install', 'theme', '-url', url]),
-
-    installThemeFile: (filePath) =>
-      cli(['install', 'theme', '-file', filePath]),
+    deleteTheme: (id) => _invoke('delete_theme', { id }),
+    installThemeUrl: (url) => _invoke('install_theme_from_url', { url }),
+    installThemeFile: (filePath) => _invoke('install_theme_from_file', { path: filePath }),
+    fetchGithubThemes: () => _invoke('fetch_github_themes'),
+    themeExists: (id) => _invoke('theme_exists', { id }),
+    installBuiltinTheme: (id, css, json) => _invoke('install_builtin_theme', { id, css, json }),
+    getDefaultTheme: () => _invoke('get_default_theme'),
+    setDefaultTheme: (id) => _invoke('set_default_theme', { id }),
 
     browseThemeFile: () => _invoke('browse_file', {
       title: 'Theme Archive',
       extensions: ['zip'],
     }),
-
-    deleteTheme: (id) => cli(['delete', 'theme', '-id', id]),
-
-    fetchGithubThemes: async () => {
-      const result = await cli(['browse', 'themes']);
-      return { themes: result.themes || [] };
-    },
 
     // Logs (open app log file)
     openAppLogs: async () => {

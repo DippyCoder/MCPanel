@@ -9,6 +9,7 @@ let systemInfo = { totalRam: null, availableStorage: null, totalStorage: null };
 let versionCache = {};
 let statusPollInterval = null;
 let uptimeInterval = null;
+let sidebarStatsInterval = null;
 let commandHistory = [];
 let historyIndex = -1;
 let startingServers = new Set();
@@ -25,17 +26,24 @@ async function init() {
   config = await window.mcpanel.getConfig();
   window.mcpanel.getSystemInfo().then(info => { systemInfo = info; });
 
+  // Ensure built-in themes are installed to user themes dir
+  await ensureBuiltinThemes();
+
+  const defaultThemeId = await window.mcpanel.getDefaultTheme();
+
   // Apply saved theme before rendering UI to avoid flash
-  if (config.activeTheme) {
-    await loadAndApplyTheme(config.activeTheme);
-    const themes = await window.mcpanel.getThemes();
-    const theme = themes.find(t => t.id === config.activeTheme);
-    if (theme) {
-      document.getElementById('active-theme-name').textContent = theme.name;
-      document.getElementById('reset-theme-btn').style.display = '';
-    } else {
-      config.activeTheme = null;
-    }
+  if (!config.activeTheme) {
+    config.activeTheme = defaultThemeId;
+    await window.mcpanel.saveConfig(config);
+  }
+  await loadAndApplyTheme(config.activeTheme);
+  const _initThemes = await window.mcpanel.getThemes();
+  const _initTheme = _initThemes.find(t => t.id === config.activeTheme);
+  if (_initTheme) {
+    document.getElementById('active-theme-name').textContent = _initTheme.name;
+  }
+  if (config.activeTheme !== defaultThemeId) {
+    document.getElementById('reset-theme-btn').style.display = '';
   }
 
   window.mcpanel.getVersion().then(v => {
@@ -49,6 +57,10 @@ async function init() {
   startStatusPolling();
   startUptimeTicker();
   setupConsoleScroll();
+
+  updateSidebarStats();
+  if (sidebarStatsInterval) clearInterval(sidebarStatsInterval);
+  sidebarStatsInterval = setInterval(updateSidebarStats, 5000);
 
   // Event listeners
   window.mcpanel.on('server-stopped', ({ id }) => {
@@ -89,6 +101,7 @@ async function init() {
       document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
       await uploadFilesFromPaths(paths, fileNavPaths.join('/'));
     });
+
   }
 
 
@@ -152,6 +165,16 @@ function openServerDetail(id) {
   document.getElementById('quick-java-args').value = srv.javaArgs || '';
   document.getElementById('quick-java-path').value = srv.javaPath || 'java';
   document.getElementById('quick-group').value = srv.group || '';
+
+  // Show Velocity-specific options only for Velocity servers
+  const velocityCard = document.getElementById('velocity-quick-options');
+  if (velocityCard) {
+    if (srv.software === 'velocity') {
+      velocityCard.classList.remove('hidden');
+    } else {
+      velocityCard.classList.add('hidden');
+    }
+  }
 
   // Load console and check running state together
   consoleAutoScroll = true;
@@ -321,10 +344,21 @@ function updateServerCardStatus(id, online, players) {
 // ─── Sidebar Servers ──────────────────────────────────────────────────────────
 function renderSidebarServers() {
   const container = document.getElementById('sidebar-servers');
-  container.innerHTML = config.servers.length === 0
-    ? `<div style="padding:12px;font-size:11px;color:var(--text-muted);text-align:center">No servers</div>`
-    : '';
+  if (config.servers.length === 0) {
+    container.innerHTML = `<div style="padding:12px;font-size:11px;color:var(--text-muted);text-align:center">No servers</div>`;
+    return;
+  }
+  container.innerHTML = '';
+
+  // Group servers: null/empty group first (ungrouped), then named groups
+  const groups = new Map();
   config.servers.forEach(srv => {
+    const key = srv.group || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(srv);
+  });
+
+  const appendServer = (srv) => {
     const btn = document.createElement('button');
     btn.className = 'sidebar-server-item';
     btn.dataset.serverId = srv.id;
@@ -340,6 +374,21 @@ function renderSidebarServers() {
       openServerDetail(srv.id);
     };
     container.appendChild(btn);
+  };
+
+  // Ungrouped first (no header)
+  if (groups.has('')) {
+    groups.get('').forEach(appendServer);
+    groups.delete('');
+  }
+
+  // Named groups with a label
+  groups.forEach((servers, groupName) => {
+    const header = document.createElement('div');
+    header.className = 'sidebar-category-header';
+    header.textContent = groupName;
+    container.appendChild(header);
+    servers.forEach(appendServer);
   });
 }
 
@@ -2104,6 +2153,25 @@ function formatBytes(bytes) {
 // ─── Themes ───────────────────────────────────────────────────────────────────
 let installedThemes = [];
 
+const BUILTIN_THEMES = ['purple-dark', 'clean-dark', 'dark-slate', 'bright-slate'];
+
+async function ensureBuiltinThemes() {
+  for (const id of BUILTIN_THEMES) {
+    const exists = await window.mcpanel.themeExists(id);
+    if (!exists) {
+      try {
+        const [css, json] = await Promise.all([
+          fetch(`/themes/${id}/theme.css`).then(r => r.text()),
+          fetch(`/themes/${id}/theme.json`).then(r => r.text()),
+        ]);
+        await window.mcpanel.installBuiltinTheme(id, css, json);
+      } catch (e) {
+        console.warn(`Failed to install builtin theme ${id}:`, e);
+      }
+    }
+  }
+}
+
 async function loadAndApplyTheme(id) {
   const styleEl = document.getElementById('theme-override');
   if (!id) {
@@ -2118,18 +2186,22 @@ async function applyTheme(id) {
   await loadAndApplyTheme(id);
   config.activeTheme = id;
   await window.mcpanel.saveConfig(config);
+  const defaultId = await window.mcpanel.getDefaultTheme();
   const theme = installedThemes.find(t => t.id === id);
   document.getElementById('active-theme-name').textContent = theme ? theme.name : id;
-  document.getElementById('reset-theme-btn').style.display = '';
+  document.getElementById('reset-theme-btn').style.display = id !== defaultId ? '' : 'none';
   renderInstalledThemes();
   toast(`Theme "${theme?.name || id}" applied`, 'success');
 }
 
 async function resetTheme() {
-  await loadAndApplyTheme(null);
-  config.activeTheme = null;
+  const defaultId = await window.mcpanel.getDefaultTheme();
+  await loadAndApplyTheme(defaultId);
+  config.activeTheme = defaultId;
   await window.mcpanel.saveConfig(config);
-  document.getElementById('active-theme-name').textContent = 'Default (Purple Dark)';
+  const themes = await window.mcpanel.getThemes();
+  const theme = themes.find(t => t.id === defaultId);
+  document.getElementById('active-theme-name').textContent = theme ? theme.name : defaultId;
   document.getElementById('reset-theme-btn').style.display = 'none';
   renderInstalledThemes();
   toast('Theme reset to default', 'info');
@@ -2163,7 +2235,7 @@ async function renderInstalledThemes() {
       </div>
       <div class="theme-item-actions">
         ${!isActive ? `<button class="btn-xs" style="color:var(--accent);border-color:rgba(168,85,247,0.3)" onclick="applyTheme('${theme.id}')">Apply</button>` : ''}
-        <button class="btn-xs" style="color:var(--red);border-color:rgba(239,68,68,0.25)" onclick="confirmDeleteTheme('${theme.id}')">Delete</button>
+        ${!theme.builtin ? `<button class="btn-xs" style="color:var(--red);border-color:rgba(239,68,68,0.25)" onclick="confirmDeleteTheme('${theme.id}')">Delete</button>` : ''}
       </div>
     `;
     container.appendChild(item);
@@ -2346,6 +2418,71 @@ async function dismissFirstStart() {
   if (!config.firstStartDone) {
     config.firstStartDone = true;
     await window.mcpanel.saveConfig(config);
+  }
+}
+
+// ─── Sidebar Stats ───────────────────────────────────────────────────────────
+async function updateSidebarStats() {
+  const serversEl    = document.getElementById('stat-servers');
+  const ramEl        = document.getElementById('stat-ram');
+  const ramBar       = document.getElementById('stat-ram-bar');
+  const cpuEl        = document.getElementById('stat-cpu');
+  const cpuBar       = document.getElementById('stat-cpu-bar');
+  const storageEl    = document.getElementById('stat-storage');
+  const storageBar   = document.getElementById('stat-storage-bar');
+
+  const total  = config.servers.length;
+  const online = Object.keys(serverStartTimes).length;
+  if (serversEl) serversEl.textContent = `${online} / ${total}`;
+
+  try {
+    const stats = await window.mcpanel.getSystemStats();
+    if (stats && !stats.error) {
+      const ramPct = stats.totalRam > 0 ? Math.round((stats.usedRam / stats.totalRam) * 100) : 0;
+      if (ramEl)  ramEl.textContent = `${ramPct}%`;
+      if (ramBar) {
+        ramBar.style.width = ramPct + '%';
+        ramBar.className = 'sidebar-stat-bar-fill' +
+          (ramPct > 85 ? ' bar-danger' : ramPct > 65 ? ' bar-warn' : '');
+      }
+      const cpuPct = Math.min(stats.cpuPct, 100);
+      if (cpuEl)  cpuEl.textContent = `${cpuPct}%`;
+      if (cpuBar) {
+        cpuBar.style.width = cpuPct + '%';
+        cpuBar.className = 'sidebar-stat-bar-fill' +
+          (cpuPct > 85 ? ' bar-danger' : cpuPct > 65 ? ' bar-warn' : '');
+      }
+    }
+  } catch {}
+
+  if (systemInfo && systemInfo.totalStorage > 0) {
+    const used = systemInfo.totalStorage - (systemInfo.availableStorage || 0);
+    const pct  = Math.round((used / systemInfo.totalStorage) * 100);
+    const TB   = 1024 ** 4;
+    const usedTB  = (used / TB).toFixed(2);
+    const totalTB = (systemInfo.totalStorage / TB).toFixed(2);
+    if (storageEl)  storageEl.textContent = `${usedTB}/${totalTB}TB`;
+    if (storageBar) {
+      storageBar.style.width = pct + '%';
+      storageBar.className = 'sidebar-stat-bar-fill' +
+        (pct > 85 ? ' bar-danger' : pct > 65 ? ' bar-warn' : '');
+    }
+  }
+}
+
+// ─── Velocity ────────────────────────────────────────────────────────────────
+async function copyVelocitySecret() {
+  if (!currentServerId) return;
+  try {
+    const result = await window.mcpanel.getVelocitySecret(currentServerId);
+    if (result && result.secret) {
+      await navigator.clipboard.writeText(result.secret);
+      toast('Forwarding secret copied!', 'success');
+    } else {
+      toast(result?.error || 'Forwarding secret not found', 'error');
+    }
+  } catch {
+    toast('Failed to read forwarding secret', 'error');
   }
 }
 
