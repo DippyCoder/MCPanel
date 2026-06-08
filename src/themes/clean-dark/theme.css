@@ -181,7 +181,14 @@
   --toast-error-bg:       rgba(153,27,27,0.92);
   --toast-error-border:   rgba(239,68,68,0.3);
   --toast-error-text:     #fca5a5;
-  --toast-info-bg:        rgba(50,30,100,0.92);
+  
+  
+  
+  
+  
+  
+  
+  -toast-info-bg:        rgba(50,30,100,0.92);
   --toast-info-border:    rgba(128,68,231,0.35);
   --toast-info-text:      var(--purple-200);
 
