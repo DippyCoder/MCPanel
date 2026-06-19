@@ -13,7 +13,7 @@
 
 <!-- Custom Titlebar -->
 <div class="titlebar">
-  <div class="titlebar-drag">
+  <div class="titlebar-drag" data-tauri-drag-region>
     <div class="titlebar-logo">
       <img src="assets/icon.png" width="18" height="18" style="object-fit:contain;border-radius:3px">
       <span>MCPanel</span>
@@ -30,7 +30,7 @@
     <button class="tb-btn" id="tb-max" onclick="window.mcpanel.maximize()">
       <svg width="11" height="11" viewBox="0 0 11 11"><rect x="0.5" y="0.5" width="10" height="10" rx="2" stroke="currentColor" fill="none"/></svg>
     </button>
-    <button class="tb-btn close" id="tb-close" onclick="window.mcpanel.close()">
+    <button class="tb-btn close" id="tb-close" onclick="requestClose()">
       <svg width="11" height="11" viewBox="0 0 11 11"><path d="M1 1L10 10M10 1L1 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
     </button>
   </div>
@@ -73,8 +73,50 @@
       </button>
     </div>
     <div class="sidebar-servers" id="sidebar-servers"></div>
+
+    <!-- Sidebar Stats -->
+    <div class="sidebar-stats" id="sidebar-stats">
+      <div class="sidebar-stats-title">System</div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">Servers</span>
+        <span class="sidebar-stat-value" id="stat-servers">—</span>
+      </div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">RAM</span>
+        <div class="sidebar-stat-bar-wrap">
+          <div class="sidebar-stat-bar-fill" id="stat-ram-bar" style="width:0%"></div>
+        </div>
+        <span class="sidebar-stat-value" id="stat-ram">—</span>
+      </div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">CPU</span>
+        <div class="sidebar-stat-bar-wrap">
+          <div class="sidebar-stat-bar-fill" id="stat-cpu-bar" style="width:0%"></div>
+        </div>
+        <span class="sidebar-stat-value" id="stat-cpu">—</span>
+      </div>
+      <div class="sidebar-stat-row">
+        <span class="sidebar-stat-label">Storage</span>
+        <div class="sidebar-stat-bar-wrap">
+          <div class="sidebar-stat-bar-fill" id="stat-storage-bar" style="width:0%"></div>
+        </div>
+        <span class="sidebar-stat-value" id="stat-storage">—</span>
+      </div>
+    </div>
+
     <div class="sidebar-footer">
-      <a href="#" onclick="window.mcpanel.openExternal('https://github.com/DippyCoder/MCPanel');return false" class="footer-link">Copyright DippyCoder 2026</a><br>GPL-3.0
+      <div class="sidebar-footer-icons">
+        <button class="sidebar-icon-btn" title="Open Terminal in MCPanel directory" onclick="openTerminal()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </button>
+        <button class="sidebar-icon-btn" title="MCPanel on GitHub" onclick="window.mcpanel.openExternal('https://github.com/DippyCoder/MCPanel');return false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577v-2.165c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23a11.52 11.52 0 0 1 3.003-.404c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        </button>
+        <button class="sidebar-icon-btn" title="MCPanel Website" onclick="window.mcpanel.openExternal('https://get-mcpanel.vercel.app');return false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </button>
+      </div>
+      <a href="#" onclick="return false" class="footer-link">Copyright DippyCoder 2026</a><br>GPL-3.0
     </div>
   </nav>
 
@@ -126,31 +168,179 @@
         <div class="server-actions" id="detail-actions"></div>
       </div>
 
+      <!-- Tab Bar -->
+      <div class="detail-tab-bar">
+        <button class="detail-tab active" id="dtab-console" onclick="switchDetailTab('console')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          Console
+        </button>
+        <button class="detail-tab" id="dtab-files" onclick="switchDetailTab('files')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Files
+        </button>
+        <button class="detail-tab" id="dtab-settings" onclick="switchDetailTab('settings')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+          Settings
+        </button>
+      </div>
+
       <div class="detail-layout">
         <div class="detail-main">
-          <!-- Console -->
-          <div class="card console-card">
-            <div class="card-header">
-              <div class="card-title">
-                <div class="status-dot" id="console-status-dot"></div>
-                Console
+
+          <!-- Console Pane -->
+          <div id="pane-console">
+            <div class="card console-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <div class="status-dot" id="console-status-dot"></div>
+                  Console
+                </div>
+                <button class="btn-ghost-sm" onclick="clearConsole()">Clear</button>
               </div>
-              <button class="btn-ghost-sm" onclick="clearConsole()">Clear</button>
-            </div>
-            <div class="console-output" id="console-output"></div>
-            <div class="autoscroll-banner hidden" id="autoscroll-banner">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
-              Autoscroll paused
-              <button class="autoscroll-resume-btn" onclick="resumeAutoscroll()">Jump to bottom</button>
-            </div>
-            <div class="console-input-row">
-              <span class="console-prompt">&gt;</span>
-              <input type="text" class="console-input" id="console-input" placeholder="Enter command..." onkeydown="handleConsoleKey(event)">
-              <button class="btn-send" onclick="sendConsoleCommand()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
-              </button>
+              <div class="console-output" id="console-output"></div>
+              <div class="autoscroll-banner hidden" id="autoscroll-banner">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                Autoscroll paused
+                <button class="autoscroll-resume-btn" onclick="resumeAutoscroll()">Jump to bottom</button>
+              </div>
+              <div class="console-input-row">
+                <span class="console-prompt">&gt;</span>
+                <input type="text" class="console-input" id="console-input" placeholder="Enter command..." onkeydown="handleConsoleKey(event)">
+                <button class="btn-send" onclick="sendConsoleCommand()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
+                </button>
+              </div>
             </div>
           </div>
+
+          <!-- Files Pane -->
+          <div id="pane-files" class="hidden">
+            <div class="card file-card">
+              <div class="file-toolbar">
+                <div class="file-breadcrumb" id="file-breadcrumb"></div>
+                <button class="btn-ghost-sm" id="file-up-btn" onclick="fileBrowserUp()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  Back
+                </button>
+                <button class="btn-ghost-sm" onclick="reloadFileTree()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                  Refresh
+                </button>
+                <button class="btn-ghost-sm" onclick="createNewFolder()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  New Folder
+                </button>
+                <button class="btn-ghost-sm" onclick="createNewFile()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+                  New File
+                </button>
+                <button class="btn-ghost-sm" onclick="openServerFolder()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  Open in Explorer
+                </button>
+              </div>
+              <div class="file-list" id="file-list"
+                ondragover="filePanelDragOver(event)"
+                ondragleave="filePanelDragLeave(event)"
+                ondrop="filePanelDrop(event)">
+              </div>
+              <div class="file-upload-section">
+                <div class="file-upload-header">
+                  <span class="file-upload-title">Upload</span>
+                  <button class="btn-ghost-sm" onclick="document.getElementById('file-upload-input').click()">Browse files</button>
+                  <input type="file" id="file-upload-input" multiple style="display:none" onchange="handleFileInputChange(event)">
+                </div>
+                <div class="file-drop-zone" id="file-drop-zone"
+                  onclick="document.getElementById('file-upload-input').click()"
+                  ondragover="fileZoneDragOver(event)"
+                  ondragleave="fileZoneDragLeave(event)"
+                  ondrop="fileZoneDrop(event)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.35;display:block;margin:0 auto 6px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  Drag &amp; drop files here, or drop onto a folder above
+                </div>
+                <div class="file-upload-progress hidden" id="file-upload-progress">
+                  <div class="file-upload-progress-bar-wrap">
+                    <div class="file-upload-progress-fill" id="file-upload-progress-fill" style="width:0%"></div>
+                  </div>
+                  <div class="file-upload-progress-text" id="file-upload-progress-text"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Settings Pane -->
+          <div id="pane-settings" class="hidden">
+            <div class="card inline-settings-card">
+              <div class="inline-settings">
+                <div class="form-grid">
+                  <div class="form-group full">
+                    <label>Server Name</label>
+                    <input type="text" id="tsett-name" class="input">
+                  </div>
+                  <div class="form-group">
+                    <label>RAM Allocation</label>
+                    <select id="tsett-ram" class="input" onchange="onRamChange('tsett')">
+                      <option value="512M">512 MB</option>
+                      <option value="1G">1 GB</option>
+                      <option value="2G">2 GB</option>
+                      <option value="4G">4 GB</option>
+                      <option value="6G">6 GB</option>
+                      <option value="8G">8 GB</option>
+                      <option value="12G">12 GB</option>
+                      <option value="16G">16 GB</option>
+                      <option value="custom">Custom...</option>
+                    </select>
+                    <input type="text" id="tsett-ram-custom" class="input" placeholder="e.g. 3G, 2048M" style="display:none;margin-top:6px">
+                  </div>
+                  <div class="form-group">
+                    <label>Storage Limit <span class="label-hint">(optional)</span></label>
+                    <input type="text" id="tsett-storage" class="input" placeholder="Unlimited">
+                  </div>
+                  <div class="form-group">
+                    <label>Port</label>
+                    <input type="number" id="tsett-port" class="input">
+                  </div>
+                  <div class="form-group">
+                    <label>Group <span class="label-hint">(optional)</span></label>
+                    <input type="text" id="tsett-group" class="input" placeholder="e.g. Survival, Testing">
+                  </div>
+                  <div class="form-group full">
+                    <label>Java Arguments</label>
+                    <input type="text" id="tsett-java-args" class="input">
+                  </div>
+                  <div class="form-group full">
+                    <label>Java Path</label>
+                    <div class="input-row">
+                      <input type="text" id="tsett-java-path" class="input" placeholder="java">
+                      <button class="btn-sm" onclick="browseJavaTabSettings()">Browse</button>
+                    </div>
+                  </div>
+                </div>
+                <!-- Proxy link button (Paper/Purpur/Folia/Leaf only) -->
+                <div id="tsett-proxy-btn-row" class="hidden" style="margin-top:16px">
+                  <button class="btn-ghost" style="width:100%;justify-content:center" onclick="openVelocityLinkModal()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                    Link to Velocity Proxy
+                  </button>
+                </div>
+                <div class="danger-zone" style="margin-top:24px">
+                  <div class="danger-zone-title">Danger Zone</div>
+                  <div class="danger-zone-row">
+                    <div>
+                      <div class="danger-zone-label">Delete Server</div>
+                      <div class="danger-zone-desc">Permanently delete this server and all its files.</div>
+                    </div>
+                    <button class="btn-danger" onclick="confirmDeleteServer()">Delete</button>
+                  </div>
+                </div>
+              </div>
+              <div class="inline-settings-footer">
+                <button class="btn-primary" onclick="saveTabSettings()">Save Settings</button>
+                <button class="btn-ghost" onclick="switchDetailTab('console')">Cancel</button>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <div class="detail-sidebar">
@@ -160,11 +350,29 @@
               <div class="big-status" id="big-status-badge">OFFLINE</div>
               <div class="status-info">
                 <div class="stat-row"><span>Port</span><span id="detail-port" class="mono">—</span></div>
-                <div class="stat-row"><span>Players</span><span id="detail-players" class="mono">—</span></div>
-                <div id="detail-player-list" style="display:none;font-size:11px;color:var(--text-muted);padding:2px 0 4px 0;word-break:break-all"></div>
                 <div class="stat-row"><span>Uptime</span><span id="detail-uptime" class="mono">—</span></div>
-                <div class="stat-row"><span>RAM</span><span id="detail-ram" class="mono">—</span></div>
-                <div class="stat-row"><span>Storage</span><span id="detail-storage" class="mono">—</span></div>
+                <div class="stat-bar-group">
+                  <div class="stat-bar-label">Players</div>
+                  <div class="stat-bar-wrap">
+                    <div class="stat-bar-fill bar-purple" id="detail-players-bar" style="width:0%"></div>
+                    <span class="stat-bar-text" id="detail-players">—</span>
+                  </div>
+                </div>
+                <div id="detail-player-list" style="display:none;font-size:11px;color:var(--text-muted);padding:2px 0 4px 0;word-break:break-all"></div>
+                <div class="stat-bar-group">
+                  <div class="stat-bar-label">RAM</div>
+                  <div class="stat-bar-wrap">
+                    <div class="stat-bar-fill bar-purple" id="detail-ram-bar" style="width:0%"></div>
+                    <span class="stat-bar-text" id="detail-ram">—</span>
+                  </div>
+                </div>
+                <div class="stat-bar-group">
+                  <div class="stat-bar-label">Storage</div>
+                  <div class="stat-bar-wrap">
+                    <div class="stat-bar-fill bar-purple" id="detail-storage-bar" style="width:0%"></div>
+                    <span class="stat-bar-text" id="detail-storage">—</span>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="control-buttons" id="control-buttons"></div>
@@ -200,20 +408,20 @@
             </div>
           </div>
 
-          <!-- Actions -->
-          <div class="card">
-            <div class="card-header"><div class="card-title">Actions</div></div>
+          <!-- Velocity Quick Options (shown only for Velocity servers) -->
+          <div class="card hidden" id="velocity-quick-options">
+            <div class="card-header"><div class="card-title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              Velocity
+            </div></div>
             <div class="action-list">
-              <button class="action-item" onclick="openServerFolder()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                Open Folder
-              </button>
-              <button class="action-item" onclick="openServerSettingsModal()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
-                Settings
+              <button class="action-item" onclick="copyVelocitySecret()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="11" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Forwarding Secret
               </button>
             </div>
           </div>
+
         </div>
       </div>
     </div>
@@ -305,7 +513,7 @@
           <p class="section-desc">Customize the look and feel of MCPanel</p>
           <div class="active-theme-bar" id="active-theme-bar">
             <span class="active-theme-label">Active theme:</span>
-            <span class="active-theme-name" id="active-theme-name">Default (Purple Dark)</span>
+            <span class="active-theme-name" id="active-theme-name">Clean Dark</span>
             <button class="btn-xs" id="reset-theme-btn" onclick="resetTheme()" style="display:none">Reset to Default</button>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
@@ -898,9 +1106,158 @@
   </div>
 </div>
 
+<!-- File Input Modal (rename / new file / new folder) -->
+<div class="modal-overlay hidden" id="modal-file-input">
+  <div class="modal small">
+    <div class="modal-header">
+      <h2 id="file-input-title">Rename</h2>
+      <button class="modal-close" onclick="closeModal('modal-file-input')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group full">
+        <label id="file-input-label">Name</label>
+        <input type="text" id="file-input-value" class="input" onkeydown="if(event.key==='Enter')submitFileInput()">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-file-input')">Cancel</button>
+      <button class="btn-primary" id="file-input-ok" onclick="submitFileInput()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- File Editor Modal -->
+<div class="modal-overlay hidden" id="modal-file-editor">
+  <div class="modal large file-editor-modal">
+    <div class="modal-header">
+      <h2 id="file-editor-title">Edit File</h2>
+      <button class="modal-close" onclick="closeModal('modal-file-editor')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body file-editor-body">
+      <textarea id="file-editor-content" class="file-editor-textarea" spellcheck="false"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-file-editor')">Cancel</button>
+      <button class="btn-primary" id="file-editor-save" onclick="saveFileEditor()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast-container" id="toast-container"></div>
 
+<!-- First Start Modal -->
+<div class="modal-overlay hidden" id="modal-first-start">
+  <div class="modal" style="width:520px;text-align:center;padding:0">
+    <div style="padding:40px 40px 32px">
+      <div class="first-start-logo">
+        <img src="assets/icon.png" width="56" height="56" style="border-radius:14px;object-fit:contain">
+      </div>
+      <h2 class="first-start-title">Welcome to MCPanel</h2>
+      <p class="first-start-sub">Your local Minecraft server panel, powered by the MCPanel CLI.</p>
+      <div class="first-start-features">
+        <div class="first-start-feature">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/></svg>
+          <div>
+            <div class="first-start-feature-title">Manage servers</div>
+            <div class="first-start-feature-desc">Create, start, stop and configure Minecraft servers</div>
+          </div>
+        </div>
+        <div class="first-start-feature">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <div>
+            <div class="first-start-feature-title">Live console</div>
+            <div class="first-start-feature-desc">Send commands and monitor server output in real time</div>
+          </div>
+        </div>
+        <div class="first-start-feature">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <div>
+            <div class="first-start-feature-title">File browser</div>
+            <div class="first-start-feature-desc">Browse, edit, upload and manage server files</div>
+          </div>
+        </div>
+        <div class="first-start-feature">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          <div>
+            <div class="first-start-feature-title">Profiles</div>
+            <div class="first-start-feature-desc">Pre-configure servers with plugins, mods, and configs</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="first-start-footer">
+      <button class="btn-primary" style="width:100%;justify-content:center" onclick="dismissFirstStart()">Get Started</button>
+    </div>
+  </div>
+</div>
+
+<!-- Terminal Modal -->
+<div class="modal-overlay hidden" id="modal-terminal">
+  <div class="terminal-modal">
+    <div class="terminal-modal-header">
+      <span class="terminal-modal-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        Terminal — MCPanel
+      </span>
+      <button class="terminal-close-btn" onclick="closeTerminal()">×</button>
+    </div>
+    <div id="terminal-container" class="terminal-body"></div>
+  </div>
+</div>
+
+<!-- Velocity Proxy Link Modal -->
+<div class="modal-overlay hidden" id="modal-velocity-link">
+  <div class="modal medium">
+    <div class="modal-header">
+      <h2>Link to Velocity Proxy</h2>
+      <button class="modal-close" onclick="closeModal('modal-velocity-link')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Server Name in Proxy Config</label>
+        <input type="text" id="tsett-proxy-name" class="input" placeholder="myserver">
+        <div class="label-hint" style="margin-top:4px">Name used in velocity.toml to identify this server</div>
+      </div>
+      <div class="form-group">
+        <label>Velocity Proxy</label>
+        <select id="tsett-proxy-velocity" class="input" onchange="onProxyVelocityChange()"></select>
+      </div>
+      <div class="form-group" id="tsett-proxy-priority-group">
+        <label>Try-list position: <span id="tsett-proxy-priority-val" style="font-weight:600">0</span></label>
+        <input type="range" id="tsett-proxy-priority" class="input" min="0" max="10" value="0"
+          oninput="document.getElementById('tsett-proxy-priority-val').textContent = this.value"
+          style="padding:0;height:24px;cursor:pointer">
+        <div id="tsett-proxy-priority-labels" style="display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px;font-size:11px;color:var(--text-muted)"></div>
+      </div>
+      <div class="form-group">
+        <label class="checkbox-item">
+          <input type="checkbox" id="tsett-proxy-custom-ip-toggle"
+            onchange="document.getElementById('tsett-proxy-custom-ip-wrap').classList.toggle('hidden', !this.checked)">
+          Use custom IP / hostname
+        </label>
+      </div>
+      <div class="form-group hidden" id="tsett-proxy-custom-ip-wrap">
+        <label>Custom IP / Hostname</label>
+        <input type="text" id="tsett-proxy-custom-ip" class="input" placeholder="127.0.0.1">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-velocity-link')">Cancel</button>
+      <button class="btn-primary" onclick="linkToVelocityProxy(this)">Link to Proxy</button>
+    </div>
+  </div>
+</div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 <script src="tauri-bridge.js"></script>
 <script src="app.js"></script>
 </body>

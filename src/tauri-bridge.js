@@ -7,7 +7,8 @@
 (function () {
   // Tauri v2 with withGlobalTauri:true exposes window.__TAURI_INTERNALS__
   const _invoke = (...a) => window.__TAURI_INTERNALS__.invoke(...a);
-  const _listen = (...a) => window.__TAURI_INTERNALS__.listen(...a);
+  // In Tauri v2, listen is on window.__TAURI__.event, not __TAURI_INTERNALS__
+  const _listen = (...a) => window.__TAURI__.event.listen(...a);
 
   // ─── CLI helper ─────────────────────────────────────────────────────────────
   async function cli(args) {
@@ -38,9 +39,20 @@
   }
 
   // ─── Window controls ─────────────────────────────────────────────────────────
-  function minimize() { window.__TAURI__.window.getCurrent().minimize(); }
-  function maximize() { window.__TAURI__.window.getCurrent().toggleMaximize(); }
-  function close()    { window.__TAURI__.window.getCurrent().close(); }
+  function _currentWindow() {
+    return window.__TAURI__?.window?.getCurrentWindow?.();
+  }
+  function minimize() {
+    const w = _currentWindow();
+    if (w) w.minimize(); else _invoke('plugin:window|minimize');
+  }
+  function maximize() {
+    const w = _currentWindow();
+    if (w) w.toggleMaximize(); else _invoke('plugin:window|toggle_maximize');
+  }
+  function close() {
+    _invoke('quit_app');
+  }
 
   // ─── Public API ──────────────────────────────────────────────────────────────
   window.mcpanel = {
@@ -109,6 +121,10 @@
       const result = await cli(['fetch', 'log', '-id', id]);
       return Array.isArray(result) ? result : [];
     },
+
+    // Reads log entries written after `offset` bytes. Returns { lines, offset }.
+    // Used by the 15 ms console poll; bypasses the CLI for low-latency file reads.
+    getLogSince: (id, offset) => _invoke('get_log_since', { id, offset }),
 
     isServerRunning: async (id) => {
       const result = await cli(['fetch', 'status', '-id', id]);
@@ -195,6 +211,36 @@
 
     getServerFileTree: (id) => cli(['fetch', 'files', '-id', id]),
 
+    openTerminal: () => _invoke('open_terminal'),
+    ptyOpen: () => _invoke('pty_open'),
+    ptyWrite: (data) => _invoke('pty_write', { data }),
+    ptyResize: (rows, cols) => _invoke('pty_resize', { rows, cols }),
+    ptyClose: () => _invoke('pty_close'),
+
+    getServerStartTime: (id) => _invoke('get_server_start_time', { id }),
+    checkFirstStartFlag: () => _invoke('check_first_start_flag'),
+
+    writeServerFile: (id, relPath, data) =>
+      _invoke('write_server_file', { id, relPath, data }),
+
+    uploadFilesFromPaths: (id, srcPaths, destDir) =>
+      _invoke('upload_files_to_server', { id, srcPaths, destDir }),
+
+    deleteServerFile: (id, relPath) =>
+      _invoke('delete_server_file', { id, relPath }),
+
+    createServerDir: (id, relPath) =>
+      _invoke('create_server_dir', { id, relPath }),
+
+    createServerFile: (id, relPath) =>
+      _invoke('create_server_file', { id, relPath }),
+
+    renameServerFile: (id, oldPath, newPath) =>
+      _invoke('rename_server_file', { id, oldPath, newPath }),
+
+    readServerFile: (id, relPath) =>
+      _invoke('read_server_file', { id, relPath }),
+
     createProfileFromServer: async (id, profileData, selectedPaths) => {
       const args = [
         '-id', id,
@@ -214,14 +260,31 @@
       return JSON.parse(raw);
     },
 
+    // Velocity proxy link (handled natively in Rust — bypasses CLI)
+    proxyInfo: (velocityId) =>
+      _invoke('proxy_info', { velocityId }),
+
+    linkToProxy: (paperId, velocityId, serverName, priority, customIp) =>
+      _invoke('link_to_proxy', {
+        paperId, velocityId, serverName,
+        priority,
+        customIp: customIp || null,
+      }),
+
+    // Velocity
+    getVelocitySecret: (id) => _invoke('get_velocity_secret', { id }),
+
+    // System stats (RAM + CPU — for sidebar stats panel)
+    getSystemStats: () => _invoke('get_system_stats'),
+
     // System info
     getVersion: () => _invoke('get_app_version'),
 
     getSystemInfo: async () => {
       try {
         const result = await cli(['system']);
-        return result || { totalRam: null, availableStorage: null };
-      } catch { return { totalRam: null, availableStorage: null }; }
+        return result || { totalRam: null, availableStorage: null, totalStorage: null };
+      } catch { return { totalRam: null, availableStorage: null, totalStorage: null }; }
     },
 
     checkUpdate: async () => {
@@ -264,31 +327,22 @@
       return { success: true };
     },
 
-    // Themes
-    getThemes: async () => {
-      const result = await cli(['list', 'themes']);
-      return Array.isArray(result) ? result : (result.themes || []);
-    },
-
+    // Themes — all handled natively in Rust, no CLI involvement
+    getThemes: () => _invoke('get_themes'),
     getThemeCss: (id) => _invoke('get_theme_css', { id }),
-
-    installThemeUrl: (url) =>
-      cli(['install', 'theme', '-url', url]),
-
-    installThemeFile: (filePath) =>
-      cli(['install', 'theme', '-file', filePath]),
+    deleteTheme: (id) => _invoke('delete_theme', { id }),
+    installThemeUrl: (url) => _invoke('install_theme_from_url', { url }),
+    installThemeFile: (filePath) => _invoke('install_theme_from_file', { path: filePath }),
+    fetchGithubThemes: () => _invoke('fetch_github_themes'),
+    themeExists: (id) => _invoke('theme_exists', { id }),
+    installBuiltinTheme: (id, css, json) => _invoke('install_builtin_theme', { id, css, json }),
+    getDefaultTheme: () => _invoke('get_default_theme'),
+    setDefaultTheme: (id) => _invoke('set_default_theme', { id }),
 
     browseThemeFile: () => _invoke('browse_file', {
       title: 'Theme Archive',
       extensions: ['zip'],
     }),
-
-    deleteTheme: (id) => cli(['delete', 'theme', '-id', id]),
-
-    fetchGithubThemes: async () => {
-      const result = await cli(['browse', 'themes']);
-      return { themes: result.themes || [] };
-    },
 
     // Logs (open app log file)
     openAppLogs: async () => {
@@ -361,7 +415,7 @@
 
     btn.disabled = true;
     btn.textContent = 'Installing…';
-    if (msgEl) msgEl.textContent = 'Installing mcpanel-cli via pip…';
+    if (msgEl) msgEl.textContent = 'Installing mcpanel-cli from GitHub…';
 
     try {
       const result = await _invoke('install_cli');

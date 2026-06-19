@@ -10,6 +10,11 @@ pub struct AppState {
     pub app_handle: AppHandle,
 }
 
+pub struct PtyState {
+    pub master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
+    pub writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+}
+
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 
 pub fn mcpanel_home() -> String {
@@ -58,10 +63,38 @@ fn log_to_file(line: &str) {
 
 // ─── CLI runner ───────────────────────────────────────────────────────────────
 
+// AppImage launchers and some desktop environments strip ~/.local/bin from PATH.
+// These helpers prepend the common user-install locations so `mcpanel` (installed
+// via pip --user or pipx) is always found regardless of how the app was launched.
+fn mcpanel_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("mcpanel");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", extra, path));
+    // AppImage bundles its own Python and exports PYTHONHOME/PYTHONPATH pointing
+    // inside the AppImage. Those break the system-installed mcpanel CLI because
+    // Python can't find its standard library (encodings, etc.). Unset them so the
+    // system Python is used when mcpanel is invoked.
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    cmd
+}
+
+fn mcpanel_async_cmd() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("mcpanel");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", extra, path));
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    cmd
+}
 
 #[tauri::command]
 pub fn check_cli() -> Value {
-    match std::process::Command::new("mcpanel")
+    match mcpanel_cmd()
         .args(["api", "version"])
         .output()
     {
@@ -83,7 +116,7 @@ pub fn check_cli() -> Value {
         Err(e) => serde_json::json!({
             "ok": false,
             "error": format!(
-                "mcpanel CLI not found.\nInstall it with:  pip install mcpanel-cli\n({})",
+                "mcpanel CLI not found.\nInstall it with:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git\n({})",
                 e
             )
         }),
@@ -96,7 +129,7 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     argv.extend(args);
     log_to_file(&format!("run_cli: mcpanel {}", argv.join(" ")));
 
-    let out = std::process::Command::new("mcpanel")
+    let out = mcpanel_cmd()
         .args(&argv)
         .output()
         .map_err(|e| format!("Failed to run mcpanel: {}", e))?;
@@ -165,17 +198,25 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
         }
     }
 
-    // Update server.properties if port changed
+    // Update config file if port changed
     if let Some(port) = updates.get("port").and_then(|p| p.as_i64()) {
         if let Some(dir) = srv["dir"].as_str() {
-            let props_file = format!("{}/server.properties", dir);
-            if let Ok(contents) = std::fs::read_to_string(&props_file) {
-                let re = format!("server-port={}", port);
-                let updated = if contents.contains("server-port=") {
+            let software = srv["software"].as_str().unwrap_or("");
+            if software == "velocity" {
+                // Velocity: update bind = "host:port" in velocity.toml
+                let toml_file = format!("{}/velocity.toml", dir);
+                let new_bind = format!("bind = \"0.0.0.0:{}\"", port);
+                let contents = std::fs::read_to_string(&toml_file).unwrap_or_default();
+                let has_bind = contents.lines().any(|l| {
+                    let t = l.trim();
+                    t.starts_with("bind") && t.contains('=') && t.contains('"')
+                });
+                let updated = if has_bind {
                     let mut result = String::new();
                     for line in contents.lines() {
-                        if line.starts_with("server-port=") {
-                            result.push_str(&re);
+                        let t = line.trim();
+                        if t.starts_with("bind") && t.contains('=') && t.contains('"') {
+                            result.push_str(&new_bind);
                         } else {
                             result.push_str(line);
                         }
@@ -183,9 +224,30 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
                     }
                     result
                 } else {
-                    format!("{}\n{}\n", contents.trim_end(), re)
+                    format!("{}\n{}\n", new_bind, contents.trim_end())
                 };
-                let _ = std::fs::write(&props_file, updated);
+                let _ = std::fs::write(&toml_file, updated);
+            } else {
+                // Standard servers: update server-port in server.properties
+                let props_file = format!("{}/server.properties", dir);
+                if let Ok(contents) = std::fs::read_to_string(&props_file) {
+                    let re = format!("server-port={}", port);
+                    let updated = if contents.contains("server-port=") {
+                        let mut result = String::new();
+                        for line in contents.lines() {
+                            if line.starts_with("server-port=") {
+                                result.push_str(&re);
+                            } else {
+                                result.push_str(line);
+                            }
+                            result.push('\n');
+                        }
+                        result
+                    } else {
+                        format!("{}\n{}\n", contents.trim_end(), re)
+                    };
+                    let _ = std::fs::write(&props_file, updated);
+                }
             }
         }
     }
@@ -415,7 +477,7 @@ pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, 
         }
     });
 
-    let out = tokio::process::Command::new("mcpanel")
+    let out = mcpanel_async_cmd()
         .args(&argv)
         .output()
         .await
@@ -468,7 +530,7 @@ pub async fn import_server_cmd(args: Vec<String>, app: AppHandle) -> Result<Stri
     let mut argv = vec!["api".into(), "import".into(), "server".into()];
     argv.extend(args);
 
-    let out = tokio::process::Command::new("mcpanel")
+    let out = mcpanel_async_cmd()
         .args(&argv)
         .output()
         .await
@@ -602,6 +664,190 @@ pub async fn ping_server(host: String, port: u16) -> Value {
     serde_json::json!({"online": false})
 }
 
+// ─── Theme management ─────────────────────────────────────────────────────────
+
+fn default_theme_path() -> String {
+    format!("{}/default-theme", mcpanel_home())
+}
+
+#[tauri::command]
+pub fn get_default_theme() -> String {
+    let path = default_theme_path();
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    let _ = std::fs::write(&path, "clean-dark");
+    "clean-dark".to_string()
+}
+
+#[tauri::command]
+pub fn set_default_theme(id: String) -> Result<(), String> {
+    std::fs::write(default_theme_path(), &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn theme_exists(id: String) -> bool {
+    std::path::Path::new(&format!("{}/{}/theme.json", mcpanel_themes_dir(), id)).exists()
+}
+
+#[tauri::command]
+pub fn install_builtin_theme(id: String, css: String, json: String) -> Result<(), String> {
+    let dir = format!("{}/{}", mcpanel_themes_dir(), id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{}/theme.css", dir), css).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{}/theme.json", dir), json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_themes() -> Vec<Value> {
+    let themes_dir = mcpanel_themes_dir();
+    let mut themes: Vec<Value> = Vec::new();
+    let entries = match std::fs::read_dir(&themes_dir) {
+        Ok(e) => e,
+        Err(_) => return themes,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("._") || name.starts_with("_tmp_") || name.starts_with("_download_") {
+            continue;
+        }
+        let meta_path = format!("{}/{}/theme.json", themes_dir, name);
+        if !std::path::Path::new(&meta_path).exists() {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(&meta_path) {
+            if let Ok(mut meta) = serde_json::from_str::<Value>(&raw) {
+                meta["id"] = Value::String(name.clone());
+                meta["dir"] = Value::String(format!("{}/{}", themes_dir, name));
+                themes.push(meta);
+            }
+        }
+    }
+    themes
+}
+
+#[tauri::command]
+pub fn delete_theme(id: String) -> Result<(), String> {
+    let dir = format!("{}/{}", mcpanel_themes_dir(), id);
+    if std::path::Path::new(&dir).exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fetch_github_themes() -> Value {
+    let url = "https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/themes-index.json";
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "10", url])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let body = String::from_utf8_lossy(&o.stdout);
+            serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({"themes": []}))
+        }
+        _ => serde_json::json!({"themes": [], "error": "Failed to fetch themes"}),
+    }
+}
+
+#[tauri::command]
+pub fn install_theme_from_file(path: String) -> Result<Value, String> {
+    _install_theme_zip(&path)
+}
+
+#[tauri::command]
+pub fn install_theme_from_url(url: String) -> Result<Value, String> {
+    let themes_dir = mcpanel_themes_dir();
+    std::fs::create_dir_all(&themes_dir).map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tmp = format!("{}/._download_{}.zip", themes_dir, ts);
+    let status = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "60", "-o", &tmp, &url])
+        .status()
+        .map_err(|e| e.to_string())?;
+    let result = if status.success() {
+        _install_theme_zip(&tmp)
+    } else {
+        Err("Download failed".to_string())
+    };
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+fn _install_theme_zip(zip_path: &str) -> Result<Value, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+
+    // Find theme.json and read it
+    let (meta_str, meta_idx) = {
+        let mut found = None;
+        for i in 0..archive.len() {
+            let name = archive.by_index(i).map_err(|e| e.to_string())?.name().to_string();
+            if name.ends_with("theme.json") && !name.starts_with("__MACOSX") {
+                found = Some(i);
+                break;
+            }
+        }
+        let idx = found.ok_or_else(|| "theme.json not found in archive".to_string())?;
+        let mut f = archive.by_index(idx).map_err(|e| e.to_string())?;
+        let mut s = String::new();
+        f.read_to_string(&mut s).map_err(|e| e.to_string())?;
+        (s, idx)
+    };
+
+    let meta: Value = serde_json::from_str(&meta_str)
+        .map_err(|e| format!("Invalid theme.json: {}", e))?;
+    if meta["name"].as_str().unwrap_or("").is_empty() {
+        return Err("theme.json must include a name field".to_string());
+    }
+
+    // Find the directory prefix that contains theme.json
+    let prefix = {
+        let name = archive.by_index(meta_idx).map_err(|e| e.to_string())?.name().to_string();
+        name[..name.len() - "theme.json".len()].to_string()
+    };
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tid = format!("theme_{}", ts);
+    let theme_dir = format!("{}/{}", mcpanel_themes_dir(), tid);
+    std::fs::create_dir_all(&theme_dir).map_err(|e| e.to_string())?;
+
+    // Re-open archive to extract
+    let file2 = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive2 = zip::ZipArchive::new(file2).map_err(|e| e.to_string())?;
+    for i in 0..archive2.len() {
+        let mut entry = archive2.by_index(i).map_err(|e| e.to_string())?;
+        let raw_name = entry.name().to_string();
+        if raw_name.starts_with("__MACOSX") || raw_name.ends_with('/') {
+            continue;
+        }
+        let rel = if raw_name.starts_with(&prefix) { &raw_name[prefix.len()..] } else { &raw_name };
+        if rel.is_empty() { continue; }
+        let dest = format!("{}/{}", theme_dir, rel);
+        if let Some(parent) = std::path::Path::new(&dest).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        std::fs::write(&dest, buf).map_err(|e| e.to_string())?;
+    }
+
+    let mut result = meta.clone();
+    result["id"] = Value::String(tid);
+    result["dir"] = Value::String(theme_dir);
+    Ok(serde_json::json!({"success": true, "theme": result}))
+}
+
 // ─── Theme CSS ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -674,6 +920,46 @@ fn rewrite_css_urls(css: &str, theme_dir: &str) -> String {
     result
 }
 
+// ─── Direct log read (used by 15 ms console poll) ────────────────────────────
+
+#[tauri::command]
+pub async fn get_log_since(id: String, offset: u64) -> Value {
+    use std::io::SeekFrom;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let log_path = format!("{}/{}.log.jsonl", mcpanel_run_dir(), id);
+
+    let mut file = match tokio::fs::File::open(&log_path).await {
+        Ok(f) => f,
+        Err(_) => return serde_json::json!({"lines": [], "offset": 0}),
+    };
+
+    let total = match file.metadata().await {
+        Ok(m) => m.len(),
+        Err(_) => return serde_json::json!({"lines": [], "offset": offset}),
+    };
+
+    // File was truncated or rotated — restart from the beginning.
+    let seek_to = if offset > total { 0 } else { offset };
+
+    if seek_to > 0 {
+        let _ = file.seek(SeekFrom::Start(seek_to)).await;
+    }
+
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).await.is_err() {
+        return serde_json::json!({"lines": [], "offset": offset});
+    }
+
+    let lines: Vec<Value> = buf
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+
+    serde_json::json!({"lines": lines, "offset": total})
+}
+
 // ─── App info ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -736,21 +1022,179 @@ fn filepath_to_string(p: tauri_plugin_dialog::FilePath) -> String {
 
 #[tauri::command]
 pub async fn install_cli() -> Result<String, String> {
-    // Try pip3 --user first, then pip --user
+    const GITHUB_URL: &str = "git+https://github.com/DippyCoder/mcpanel-cli.git";
     for pip in &["pip3", "pip"] {
         let out = tokio::process::Command::new(pip)
-            .args(["install", "--user", "mcpanel-cli"])
+            .args(["install", "--user", GITHUB_URL])
             .output()
             .await;
         match out {
             Ok(o) if o.status.success() => {
-                log_to_file("install_cli: mcpanel-cli installed via pip");
+                log_to_file("install_cli: mcpanel-cli installed from GitHub");
                 return Ok("mcpanel-cli installed successfully".into());
             }
             _ => continue,
         }
     }
-    Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install mcpanel-cli".into())
+    Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git".into())
+}
+
+// ─── File upload ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn write_server_file(id: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&dest, &data).map_err(|e| e.to_string())
+}
+
+// ─── Open terminal in MCPanel home dir ───────────────────────────────────────
+
+#[tauri::command]
+pub fn open_terminal() -> Result<(), String> {
+    let dir = mcpanel_home();
+    let _ = std::fs::create_dir_all(&dir);
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    let full_path = format!("{}:{}", extra, path);
+
+    // (terminal, dir-flag) – empty string means use current_dir only
+    let candidates: &[(&str, &[&str])] = &[
+        ("gnome-terminal", &["--working-directory"]),
+        ("konsole",        &["--workdir"]),
+        ("xfce4-terminal", &["--working-directory"]),
+        ("alacritty",      &["--working-directory"]),
+        ("kitty",          &[]),
+        ("wezterm",        &["start", "--cwd"]),
+        ("xterm",          &[]),
+        ("x-terminal-emulator", &[]),
+    ];
+
+    for (term, flags) in candidates {
+        let mut cmd = std::process::Command::new(term);
+        cmd.current_dir(&dir).env("PATH", &full_path);
+        for flag in *flags {
+            cmd.arg(flag);
+        }
+        // flags that take the dir as the next arg need the dir appended
+        if !flags.is_empty() && *flags.last().unwrap() != "start" {
+            cmd.arg(&dir);
+        }
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+    }
+
+    Err("No terminal emulator found. Install gnome-terminal, konsole, or xterm.".into())
+}
+
+// ─── Drag-drop upload (Tauri intercepts OS drops, gives us paths) ─────────────
+
+#[tauri::command]
+pub fn upload_files_to_server(id: String, src_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    if !dest_dir.is_empty() && (dest_dir.contains("..") || dest_dir.starts_with('/')) {
+        return Err("Invalid destination path".into());
+    }
+    let server_dir = get_server_dir(&id)?;
+    let base = std::path::Path::new(&server_dir);
+    let dest_base = if dest_dir.is_empty() { base.to_path_buf() } else { base.join(&dest_dir) };
+    std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
+    for src_path in &src_paths {
+        let src = std::path::Path::new(src_path);
+        if src.is_file() {
+            if let Some(name) = src.file_name() {
+                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ─── File operations ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn delete_server_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    if !target.exists() {
+        return Err("File not found".into());
+    }
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(&target).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn create_server_dir(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    std::fs::create_dir_all(&target).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_server_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if dest.exists() {
+        return Err("A file with that name already exists".into());
+    }
+    std::fs::write(&dest, "").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_server_file(id: String, old_path: String, new_path: String) -> Result<(), String> {
+    if old_path.contains("..") || old_path.starts_with('/')
+        || new_path.contains("..") || new_path.starts_with('/')
+    {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let base = std::path::Path::new(&dir);
+    let src = base.join(&old_path);
+    let dst = base.join(&new_path);
+    if !src.exists() {
+        return Err("Source not found".into());
+    }
+    if dst.exists() {
+        return Err("A file with that name already exists".into());
+    }
+    std::fs::rename(&src, &dst).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn read_server_file(id: String, rel_path: String) -> Result<String, String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_server_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    let metadata = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if metadata.len() > 5 * 1024 * 1024 {
+        return Err("File too large to edit in-app (max 5MB)".into());
+    }
+    std::fs::read_to_string(&target).map_err(|_| "File is binary or cannot be read as text".into())
 }
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────
@@ -758,4 +1202,526 @@ pub async fn install_cli() -> Result<String, String> {
 #[tauri::command]
 pub fn get_app_log_path() -> String {
     app_log_path()
+}
+
+// ─── Server start time (reads run/<id>.json directly, no CLI round-trip) ─────
+
+#[tauri::command]
+pub fn get_server_start_time(id: String) -> Option<u64> {
+    let path = format!("{}/{}.json", mcpanel_run_dir(), id);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let v: Value = serde_json::from_str(&content).ok()?;
+    v["started"].as_u64()
+}
+
+// ─── First-start debug flag ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn check_first_start_flag() -> bool {
+    let flag = format!("{}/debug_first_start", mcpanel_home());
+    if std::path::Path::new(&flag).exists() {
+        let _ = std::fs::remove_file(&flag);
+        true
+    } else {
+        false
+    }
+}
+
+// ─── Embedded PTY terminal ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn pty_open(app: AppHandle, state: tauri::State<'_, PtyState>) -> Result<(), String> {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::Read;
+
+    *state.master.lock().unwrap() = None;
+    *state.writer.lock().unwrap() = None;
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+
+    let mut cmd = CommandBuilder::new("bash");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+    let path = std::env::var("PATH").unwrap_or_default();
+    cmd.env("PATH", format!("{}:{}", extra, path));
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    cmd.cwd(mcpanel_home());
+
+    let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+    *state.master.lock().unwrap() = Some(pair.master);
+    *state.writer.lock().unwrap() = Some(writer);
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = app2.emit("pty-data", data);
+                }
+            }
+        }
+        let _ = app2.emit("pty-closed", ());
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_write(data: String, state: tauri::State<'_, PtyState>) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(w) = state.writer.lock().unwrap().as_mut() {
+        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_resize(rows: u16, cols: u16, state: tauri::State<'_, PtyState>) -> Result<(), String> {
+    use portable_pty::PtySize;
+    if let Some(m) = state.master.lock().unwrap().as_ref() {
+        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_close(state: tauri::State<'_, PtyState>) {
+    *state.master.lock().unwrap() = None;
+    *state.writer.lock().unwrap() = None;
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+// ─── Velocity proxy link ──────────────────────────────────────────────────────
+
+fn find_velocity_try_array(lines: &[&str]) -> Option<(usize, usize, Vec<String>)> {
+    let mut in_servers = false;
+    let mut try_start: Option<usize> = None;
+    let mut in_array = false;
+    let mut entries: Vec<String> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t == "[servers]" {
+            in_servers = true;
+            continue;
+        }
+        if in_servers && t.starts_with('[') && t != "[servers]" {
+            in_servers = false;
+        }
+        if !in_servers { continue; }
+
+        if try_start.is_none() && t.starts_with("try") {
+            if let Some(eq) = t.find('=') {
+                let after = t[eq + 1..].trim();
+                if after.starts_with('[') {
+                    try_start = Some(i);
+                    if after.ends_with(']') {
+                        let inner = &after[1..after.len() - 1];
+                        for part in inner.split(',') {
+                            let s = part.trim().trim_matches('"').trim();
+                            if !s.is_empty() { entries.push(s.to_string()); }
+                        }
+                        return Some((i, i, entries));
+                    }
+                    in_array = true;
+                    continue;
+                }
+            }
+        }
+
+        if in_array {
+            if t == "]" || t == "]," {
+                return Some((try_start.unwrap(), i, entries));
+            }
+            let entry = t.trim_matches(',').trim().trim_matches('"').trim().to_string();
+            if !entry.is_empty() { entries.push(entry); }
+        }
+    }
+    None
+}
+
+fn parse_velocity_try_list(contents: &str) -> Vec<String> {
+    let lines: Vec<&str> = contents.lines().collect();
+    find_velocity_try_array(&lines).map(|(_, _, v)| v).unwrap_or_default()
+}
+
+fn get_server_port_from_config(id: &str) -> u16 {
+    let dir = match get_server_dir(id) {
+        Ok(d) => d,
+        Err(_) => return 25565,
+    };
+    let props = format!("{}/server.properties", dir);
+    if let Ok(contents) = std::fs::read_to_string(&props) {
+        for line in contents.lines() {
+            if line.starts_with("server-port=") {
+                if let Ok(p) = line["server-port=".len()..].trim().parse::<u16>() {
+                    return p;
+                }
+            }
+        }
+    }
+    25565
+}
+
+fn read_velocity_secret_str(velocity_dir: &str) -> Option<String> {
+    let toml_path = format!("{}/velocity.toml", velocity_dir);
+    if let Ok(contents) = std::fs::read_to_string(&toml_path) {
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let fname = &t[s + 1..s + 1 + e];
+                        let file_path = format!("{}/{}", velocity_dir, fname);
+                        if let Ok(secret) = std::fs::read_to_string(&file_path) {
+                            let secret = secret.trim().to_string();
+                            if !secret.is_empty() { return Some(secret); }
+                        }
+                    }
+                }
+            }
+        }
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret") && !t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let secret = &t[s + 1..s + 1 + e];
+                        if !secret.is_empty() { return Some(secret.to_string()); }
+                    }
+                }
+            }
+        }
+    }
+    let secret_path = format!("{}/forwarding.secret", velocity_dir);
+    if let Ok(secret) = std::fs::read_to_string(&secret_path) {
+        let s = secret.trim().to_string();
+        if !s.is_empty() { return Some(s); }
+    }
+    None
+}
+
+fn update_velocity_toml(contents: &str, server_name: &str, address: &str, priority: u64) -> Result<String, String> {
+    let lines: Vec<&str> = contents.lines().collect();
+    let (try_start, try_end, mut entries) = find_velocity_try_array(&lines)
+        .ok_or("Could not find try = [...] in [servers] section of velocity.toml")?;
+
+    let server_entry_exists = lines.iter().any(|l| {
+        let t = l.trim();
+        t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
+    });
+
+    if !entries.contains(&server_name.to_string()) {
+        let pos = (priority as usize).min(entries.len());
+        entries.insert(pos, server_name.to_string());
+    }
+
+    let try_line = format!(
+        "try = [{}]",
+        entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
+    );
+
+    let mut result = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if i == try_start {
+            if !server_entry_exists {
+                result.push_str(&format!("{} = \"{}\"\n", server_name, address));
+            }
+            result.push_str(&try_line);
+            result.push('\n');
+            i = try_end + 1;
+            continue;
+        }
+        result.push_str(lines[i]);
+        result.push('\n');
+        i += 1;
+    }
+    Ok(result)
+}
+
+fn ensure_velocity_forwarding_modern(contents: &str) -> String {
+    let mut result = String::new();
+    for line in contents.lines() {
+        let t = line.trim();
+        if t.starts_with("player-info-forwarding-mode") && t.contains('=') {
+            if let Some(eq) = t.find('=') {
+                let val = t[eq + 1..].trim().trim_matches('"').to_uppercase();
+                if val == "NONE" {
+                    result.push_str("player-info-forwarding-mode = \"MODERN\"\n");
+                    continue;
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
+fn update_paper_global_yml(contents: &str, secret: &str) -> String {
+    let mut result = String::new();
+    let mut in_proxies = false;
+    let mut in_velocity = false;
+    let mut proxies_indent: usize = 0;
+    let mut velocity_indent: usize = 0;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+
+        if in_velocity && indent <= velocity_indent {
+            in_velocity = false;
+        }
+        if in_proxies && indent <= proxies_indent && trimmed != "proxies:" {
+            in_proxies = false;
+            in_velocity = false;
+        }
+
+        if !in_proxies && trimmed == "proxies:" {
+            in_proxies = true;
+            proxies_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+        if in_proxies && !in_velocity && trimmed == "velocity:" {
+            in_velocity = true;
+            velocity_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if in_velocity {
+            let spaces = " ".repeat(indent);
+            if trimmed.starts_with("enabled:") {
+                result.push_str(&format!("{}enabled: true\n", spaces));
+                continue;
+            }
+            if trimmed.starts_with("online-mode:") {
+                result.push_str(&format!("{}online-mode: true\n", spaces));
+                continue;
+            }
+            if trimmed.starts_with("secret:") {
+                result.push_str(&format!("{}secret: '{}'\n", spaces, secret));
+                continue;
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
+#[tauri::command]
+pub fn proxy_info(velocity_id: String) -> Value {
+    let dir = match get_server_dir(&velocity_id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let toml_path = format!("{}/velocity.toml", dir);
+    let contents = match std::fs::read_to_string(&toml_path) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": format!("Failed to read velocity.toml: {}", e)}),
+    };
+    serde_json::json!({"tryList": parse_velocity_try_list(&contents)})
+}
+
+#[tauri::command]
+pub fn link_to_proxy(
+    paper_id: String,
+    velocity_id: String,
+    server_name: String,
+    priority: u64,
+    custom_ip: Option<String>,
+) -> Value {
+    let paper_dir = match get_server_dir(&paper_id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let velocity_dir = match get_server_dir(&velocity_id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+
+    let port = get_server_port_from_config(&paper_id);
+    let address = match custom_ip {
+        Some(ref ip) if !ip.is_empty() => format!("{}:{}", ip, port),
+        _ => format!("127.0.0.1:{}", port),
+    };
+
+    // Update velocity.toml
+    let toml_path = format!("{}/velocity.toml", velocity_dir);
+    let toml_contents = match std::fs::read_to_string(&toml_path) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": format!("Failed to read velocity.toml: {}", e)}),
+    };
+    let updated_toml = match update_velocity_toml(&toml_contents, &server_name, &address, priority) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let updated_toml = ensure_velocity_forwarding_modern(&updated_toml);
+    if let Err(e) = std::fs::write(&toml_path, &updated_toml) {
+        return serde_json::json!({"error": format!("Failed to write velocity.toml: {}", e)});
+    }
+
+    // Set online-mode=false in server.properties
+    let props_path = format!("{}/server.properties", paper_dir);
+    if let Ok(props) = std::fs::read_to_string(&props_path) {
+        let updated = if props.contains("online-mode=") {
+            let mut r = String::new();
+            for line in props.lines() {
+                if line.starts_with("online-mode=") {
+                    r.push_str("online-mode=false\n");
+                } else {
+                    r.push_str(line);
+                    r.push('\n');
+                }
+            }
+            r
+        } else {
+            format!("{}\nonline-mode=false\n", props.trim_end())
+        };
+        let _ = std::fs::write(&props_path, updated);
+    }
+
+    // Update paper-global.yml with forwarding secret
+    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
+    let paper_global_path = format!("{}/config/paper-global.yml", paper_dir);
+    if let Ok(paper_global) = std::fs::read_to_string(&paper_global_path) {
+        let updated = update_paper_global_yml(&paper_global, &secret);
+        let _ = std::fs::write(&paper_global_path, updated);
+    }
+
+    serde_json::json!({"success": true})
+}
+
+// ─── Velocity forwarding secret ───────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_velocity_secret(id: String) -> Value {
+    let dir = match get_server_dir(&id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+
+    // Modern Velocity: forwarding-secret in velocity.toml
+    let toml_path = format!("{}/velocity.toml", dir);
+    if let Ok(contents) = std::fs::read_to_string(&toml_path) {
+        // Check forwarding-secret-file directive first
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let fname = &t[s + 1..s + 1 + e];
+                        let file_path = format!("{}/{}", dir, fname);
+                        if let Ok(secret) = std::fs::read_to_string(&file_path) {
+                            let secret = secret.trim().to_string();
+                            if !secret.is_empty() {
+                                return serde_json::json!({"secret": secret});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Inline forwarding-secret = "value"
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret") && !t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let secret = &t[s + 1..s + 1 + e];
+                        if !secret.is_empty() {
+                            return serde_json::json!({"secret": secret});
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Legacy Velocity: forwarding.secret plain-text file
+    let secret_path = format!("{}/forwarding.secret", dir);
+    if let Ok(secret) = std::fs::read_to_string(&secret_path) {
+        let secret = secret.trim().to_string();
+        if !secret.is_empty() {
+            return serde_json::json!({"secret": secret});
+        }
+    }
+
+    serde_json::json!({"error": "Forwarding secret not found. Check velocity.toml or forwarding.secret."})
+}
+
+// ─── System stats (RAM + CPU load) ───────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_system_stats() -> Value {
+    let mut total_ram: u64 = 0;
+    let mut avail_ram: u64 = 0;
+
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        for line in meminfo.lines() {
+            if line.starts_with("MemTotal:") {
+                if let Some(kb) = line.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                    total_ram = kb * 1024;
+                }
+            } else if line.starts_with("MemAvailable:") {
+                if let Some(kb) = line.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                    avail_ram = kb * 1024;
+                }
+            }
+        }
+    }
+
+    let load1m: f64 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|n| n.parse().ok()))
+        .unwrap_or(0.0);
+
+    let cpu_count = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("processor"))
+        .count()
+        .max(1);
+
+    let cpu_pct = ((load1m / cpu_count as f64) * 1000.0).round() / 10.0;
+    let cpu_pct = cpu_pct.min(100.0);
+    let used_ram = total_ram.saturating_sub(avail_ram);
+
+    serde_json::json!({
+        "totalRam": total_ram,
+        "availRam": avail_ram,
+        "usedRam": used_ram,
+        "cpuPct": cpu_pct,
+        "loadAvg": load1m,
+    })
 }

@@ -5,33 +5,45 @@
 let config = { servers: [], jdkPaths: [] };
 let profiles = [];
 let currentServerId = null;
-let systemInfo = { totalRam: null, availableStorage: null };
+let systemInfo = { totalRam: null, availableStorage: null, totalStorage: null };
 let versionCache = {};
 let statusPollInterval = null;
 let uptimeInterval = null;
+let sidebarStatsInterval = null;
 let commandHistory = [];
 let historyIndex = -1;
 let startingServers = new Set();
 let serverStartTimes = {};
 let pendingEulaServerId = null;
 let consoleAutoScroll = true;
+let consoleLogOffset = 0;
+let consolePollInterval = null;
+let detailStatsInterval = null;
+let selectedFilePaths = new Set();
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   config = await window.mcpanel.getConfig();
   window.mcpanel.getSystemInfo().then(info => { systemInfo = info; });
 
+  // Ensure built-in themes are installed to user themes dir
+  await ensureBuiltinThemes();
+
+  const defaultThemeId = await window.mcpanel.getDefaultTheme();
+
   // Apply saved theme before rendering UI to avoid flash
-  if (config.activeTheme) {
-    await loadAndApplyTheme(config.activeTheme);
-    const themes = await window.mcpanel.getThemes();
-    const theme = themes.find(t => t.id === config.activeTheme);
-    if (theme) {
-      document.getElementById('active-theme-name').textContent = theme.name;
-      document.getElementById('reset-theme-btn').style.display = '';
-    } else {
-      config.activeTheme = null;
-    }
+  if (!config.activeTheme) {
+    config.activeTheme = defaultThemeId;
+    await window.mcpanel.saveConfig(config);
+  }
+  await loadAndApplyTheme(config.activeTheme);
+  const _initThemes = await window.mcpanel.getThemes();
+  const _initTheme = _initThemes.find(t => t.id === config.activeTheme);
+  if (_initTheme) {
+    document.getElementById('active-theme-name').textContent = _initTheme.name;
+  }
+  if (config.activeTheme !== defaultThemeId) {
+    document.getElementById('reset-theme-btn').style.display = '';
   }
 
   window.mcpanel.getVersion().then(v => {
@@ -46,11 +58,11 @@ async function init() {
   startUptimeTicker();
   setupConsoleScroll();
 
-  // Event listeners
-  window.mcpanel.on('server-log', ({ id, line, type }) => {
-    if (id === currentServerId) appendConsoleLine(line, type);
-  });
+  updateSidebarStats();
+  if (sidebarStatsInterval) clearInterval(sidebarStatsInterval);
+  sidebarStatsInterval = setInterval(updateSidebarStats, 5000);
 
+  // Event listeners
   window.mcpanel.on('server-stopped', ({ id }) => {
     startingServers.delete(id);
     delete serverStartTimes[id];
@@ -75,10 +87,46 @@ async function init() {
   // Silent update checks on startup — populate status and toast if update found
   window.mcpanel.checkUpdate().then(result => applyUpdateResult(result));
   window.mcpanel.checkCliUpdate().then(result => applyCliUpdateResult(result));
+
+  // File drag-drop + close notification via the Tauri window handle
+  const _win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (_win?.listen) {
+    _win.listen('tauri://drag-drop', async (event) => {
+      if (!currentServerId) return;
+      const pane = document.getElementById('pane-files');
+      if (!pane || pane.classList.contains('hidden')) return;
+      const paths = event.payload?.paths || [];
+      if (!paths.length) return;
+      document.getElementById('file-drop-zone')?.classList.remove('drop-active');
+      document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
+      await uploadFilesFromPaths(paths, fileNavPaths.join('/'));
+    });
+
+  }
+
+
+  // First-start check
+  const debugFlag = await window.mcpanel.checkFirstStartFlag();
+  if (debugFlag || !config.firstStartDone) {
+    openFirstStart();
+  }
+}
+
+// ─── Window Close ────────────────────────────────────────────────────────────
+function requestClose() {
+  const runningIds = Object.keys(serverStartTimes);
+  if (runningIds.length > 0) {
+    const n = runningIds.length;
+    const msg = `${n} server${n !== 1 ? 's are' : ' is'} still running in the background and will continue after MCPanel closes.\n\nClose MCPanel anyway?`;
+    if (!confirm(msg)) return;
+  }
+  window.mcpanel.close();
 }
 
 // ─── Page Navigation ──────────────────────────────────────────────────────────
 function showPage(page) {
+  stopConsolePoll();
+  if (detailStatsInterval) { clearInterval(detailStatsInterval); detailStatsInterval = null; }
   document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
   document.getElementById('page-' + page).classList.remove('hidden');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -92,6 +140,8 @@ function showPage(page) {
 
 function openServerDetail(id) {
   currentServerId = id;
+  cachedFileTree = null; fileNavStack = []; fileNavPaths = []; selectedFilePaths = new Set();
+  switchDetailTab('console');
   const srv = config.servers.find(s => s.id === id);
   if (!srv) return;
 
@@ -108,8 +158,7 @@ function openServerDetail(id) {
   document.getElementById('detail-server-subtitle').textContent =
     `${srv.version} · ${capitalise(srv.software)} · Port ${srv.port}`;
   document.getElementById('detail-port').textContent = srv.port;
-  document.getElementById('detail-ram').textContent = srv.ram;
-  document.getElementById('detail-storage').textContent = srv.storageLimit || 'Unlimited';
+  setRamBar(0, srv.ram);
 
   // Quick settings
   document.getElementById('quick-port').value = srv.port;
@@ -117,20 +166,38 @@ function openServerDetail(id) {
   document.getElementById('quick-java-path').value = srv.javaPath || 'java';
   document.getElementById('quick-group').value = srv.group || '';
 
-  // Load console history
+  // Show Velocity-specific options only for Velocity servers
+  const velocityCard = document.getElementById('velocity-quick-options');
+  if (velocityCard) {
+    if (srv.software === 'velocity') {
+      velocityCard.classList.remove('hidden');
+    } else {
+      velocityCard.classList.add('hidden');
+    }
+  }
+
+  // Load console and check running state together
   consoleAutoScroll = true;
   document.getElementById('autoscroll-banner').classList.add('hidden');
   const logEl = document.getElementById('console-output');
   logEl.innerHTML = '';
-  const existingLog = window.mcpanel.getServerLog ? [] : [];
-  window.mcpanel.getServerLog(id).then(log => {
-    log.forEach(entry => appendConsoleLine(entry.text, entry.type));
-  });
+  stopConsolePoll();
+  consoleLogOffset = 0;
 
-  // Check running state
   window.mcpanel.isServerRunning(id).then(running => {
     updateDetailControls(running);
-    if (running) updateDetailOnline(true);
+    if (running) {
+      updateDetailOnline(true);
+      // Only load persisted logs when server is actively running (fresh log from rotate_log)
+      window.mcpanel.getLogSince(id, 0).then(result => {
+        consoleLogOffset = result.offset || 0;
+        (result.lines || []).forEach(entry => appendConsoleLine(entry.text || '', entry.type || 'out'));
+        startConsolePoll(id);
+      });
+    } else {
+      // Server is stopped — start polling so logs appear when it starts
+      startConsolePoll(id);
+    }
   });
 
   // Initialise uptime display
@@ -139,19 +206,19 @@ function openServerDetail(id) {
     detailUptime.textContent = serverStartTimes[id] ? formatUptime(Date.now() - serverStartTimes[id]) : '—';
   }
 
-  // Storage stats (async)
-  window.mcpanel.getServerDirStats(id).then(({ size }) => {
-    const storageEl = document.getElementById('detail-storage');
-    const used = formatBytes(size);
-    if (srv.storageLimit) {
-      storageEl.textContent = `${used} / ${srv.storageLimit}`;
-      const limitBytes = parseStorageLimit(srv.storageLimit);
-      storageEl.style.color = (limitBytes !== null && size > limitBytes) ? 'var(--red)' : '';
-    } else {
-      storageEl.textContent = used;
-      storageEl.style.color = '';
-    }
-  });
+  // Storage stats — load immediately then refresh every 5 s
+  refreshDetailStats(id);
+  if (detailStatsInterval) clearInterval(detailStatsInterval);
+  detailStatsInterval = setInterval(() => refreshDetailStats(currentServerId), 5000);
+}
+
+async function refreshDetailStats(id) {
+  if (!id) return;
+  const srv = config.servers.find(s => s.id === id);
+  if (!srv) return;
+  const result = await window.mcpanel.getServerDirStats(id);
+  setStorageBar(result.size, srv.storageLimit);
+  setRamBar(result.ramBytes || 0, srv.ram);
 }
 
 // ─── Servers Grid ─────────────────────────────────────────────────────────────
@@ -277,10 +344,21 @@ function updateServerCardStatus(id, online, players) {
 // ─── Sidebar Servers ──────────────────────────────────────────────────────────
 function renderSidebarServers() {
   const container = document.getElementById('sidebar-servers');
-  container.innerHTML = config.servers.length === 0
-    ? `<div style="padding:12px;font-size:11px;color:var(--text-muted);text-align:center">No servers</div>`
-    : '';
+  if (config.servers.length === 0) {
+    container.innerHTML = `<div style="padding:12px;font-size:11px;color:var(--text-muted);text-align:center">No servers</div>`;
+    return;
+  }
+  container.innerHTML = '';
+
+  // Group servers: null/empty group first (ungrouped), then named groups
+  const groups = new Map();
   config.servers.forEach(srv => {
+    const key = srv.group || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(srv);
+  });
+
+  const appendServer = (srv) => {
     const btn = document.createElement('button');
     btn.className = 'sidebar-server-item';
     btn.dataset.serverId = srv.id;
@@ -296,6 +374,21 @@ function renderSidebarServers() {
       openServerDetail(srv.id);
     };
     container.appendChild(btn);
+  };
+
+  // Ungrouped first (no header)
+  if (groups.has('')) {
+    groups.get('').forEach(appendServer);
+    groups.delete('');
+  }
+
+  // Named groups with a label
+  groups.forEach((servers, groupName) => {
+    const header = document.createElement('div');
+    header.className = 'sidebar-category-header';
+    header.textContent = groupName;
+    container.appendChild(header);
+    servers.forEach(appendServer);
   });
 }
 
@@ -352,7 +445,10 @@ async function pollAllStatuses() {
     if (running) {
       const status = await window.mcpanel.pingServer('127.0.0.1', parseInt(srv.port));
       if (status && status.players != null) {
-        if (!serverStartTimes[srv.id]) serverStartTimes[srv.id] = Date.now();
+        if (!serverStartTimes[srv.id]) {
+          const t = await window.mcpanel.getServerStartTime(srv.id);
+          serverStartTimes[srv.id] = t || Date.now();
+        }
         startingServers.delete(srv.id);
         updateServerCardStatus(srv.id, true, status.players || 0);
         updateSidebarDot(srv.id, true);
@@ -378,7 +474,11 @@ async function pollAllStatuses() {
       }
       updateServerCardStatus(srv.id, false, 0);
       updateSidebarDot(srv.id, false);
-      if (currentServerId === srv.id) updateDetailControls(false);
+      if (currentServerId === srv.id) {
+        updateDetailControls(false);
+        setRamBar(0, srv.ram);
+        setPlayersBar(0, 0, false);
+      }
     }
   }
 }
@@ -417,10 +517,555 @@ function closeEulaModal() {
 function updateDetailStarting() {
   const bigStatus = document.getElementById('big-status-badge');
   if (bigStatus) { bigStatus.className = 'big-status starting'; bigStatus.textContent = 'STARTING'; }
-  const playersEl = document.getElementById('detail-players');
-  if (playersEl) playersEl.textContent = '—';
+  setPlayersBar(0, 0, false);
   const listEl = document.getElementById('detail-player-list');
   if (listEl) listEl.style.display = 'none';
+}
+
+// ─── Detail Tabs ─────────────────────────────────────────────────────────────
+
+function switchDetailTab(name) {
+  ['console', 'files', 'settings'].forEach(t => {
+    document.getElementById(`dtab-${t}`).classList.toggle('active', t === name);
+    document.getElementById(`pane-${t}`).classList.toggle('hidden', t !== name);
+  });
+  if (name === 'files') openFilesTab();
+  if (name === 'settings') openSettingsTab();
+}
+
+// ─── File Browser ─────────────────────────────────────────────────────────────
+
+let fileNavStack = [];   // stack of children arrays
+let fileNavPaths = [];   // stack of name strings for breadcrumb
+let cachedFileTree = null;
+
+async function openFilesTab() {
+  if (!currentServerId) return;
+  const listEl = document.getElementById('file-list');
+  const savedPaths = [...fileNavPaths];
+  if (!cachedFileTree) {
+    listEl.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:12px">Loading…</div>`;
+    const r = await window.mcpanel.getServerFileTree(currentServerId);
+    if (r.error) {
+      listEl.innerHTML = `<div style="padding:24px;color:var(--red);font-size:12px">${escapeHtml(r.error)}</div>`;
+      return;
+    }
+    cachedFileTree = r.tree || [];
+  }
+  fileNavStack = [cachedFileTree];
+  fileNavPaths = [];
+  for (const seg of savedPaths) {
+    const dir = fileNavStack[fileNavStack.length - 1].find(n => n.type === 'dir' && n.name === seg);
+    if (dir) { fileNavStack.push(dir.children || []); fileNavPaths.push(seg); }
+    else break;
+  }
+  renderFileBrowser();
+}
+
+async function reloadFileTree() {
+  cachedFileTree = null;
+  await openFilesTab();
+}
+
+function renderFileBrowser() {
+  const children = fileNavStack[fileNavStack.length - 1];
+  const listEl = document.getElementById('file-list');
+  const bcEl = document.getElementById('file-breadcrumb');
+  const upBtn = document.getElementById('file-up-btn');
+
+  // Breadcrumb — show server ID (folder name) not the display name
+  const parts = [currentServerId, ...fileNavPaths];
+  bcEl.innerHTML = parts.map((seg, i) => {
+    const isCurrent = i === parts.length - 1;
+    return (i > 0 ? `<span class="file-bc-sep">/</span>` : '') +
+      `<span class="file-bc-seg${isCurrent ? ' current' : ''}" data-depth="${i}">${escapeHtml(seg)}</span>`;
+  }).join('');
+  bcEl.querySelectorAll('[data-depth]').forEach(el => {
+    const depth = parseInt(el.dataset.depth);
+    if (depth < parts.length - 1) {
+      el.onclick = () => fileBrowserGoTo(depth);
+    }
+  });
+
+  upBtn.disabled = fileNavStack.length <= 1;
+
+  // File rows
+  listEl.innerHTML = '';
+  const sorted = [...children].sort((a, b) => {
+    if (a.type === b.type) return a.name.localeCompare(b.name);
+    return a.type === 'dir' ? -1 : 1;
+  });
+
+  for (const node of sorted) {
+    const nodePath = [...fileNavPaths, node.name].join('/');
+    const row = document.createElement('div');
+    row.className = `file-row${node.type === 'dir' ? ' is-dir' : ''}${selectedFilePaths.has(nodePath) ? ' selected' : ''}`;
+    row.innerHTML = `
+      <input type="checkbox" class="file-row-check" ${selectedFilePaths.has(nodePath) ? 'checked' : ''}>
+      <div class="file-row-icon">${fileIcon(node.name, node.type)}</div>
+      <span class="file-row-name">${escapeHtml(node.name)}</span>
+      <span class="file-row-size">${node.type === 'dir' ? '' : formatBytes(node.size || 0)}</span>
+      <div class="file-row-actions">
+        <button class="file-action-btn rename-btn" title="Rename">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="file-action-btn delete-btn" title="Delete">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>`;
+
+    row.querySelector('.file-row-check').addEventListener('change', e => {
+      e.stopPropagation();
+      if (e.target.checked) selectedFilePaths.add(nodePath);
+      else selectedFilePaths.delete(nodePath);
+      row.classList.toggle('selected', e.target.checked);
+    });
+    row.querySelector('.file-row-check').addEventListener('click', e => e.stopPropagation());
+    row.querySelector('.rename-btn').addEventListener('click', e => { e.stopPropagation(); renameFileEntry(nodePath, node.name); });
+    row.querySelector('.delete-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      if (selectedFilePaths.size > 1 && selectedFilePaths.has(nodePath)) deleteSelectedFiles();
+      else deleteFileEntry(nodePath, node.name, node.type === 'dir');
+    });
+
+    if (node.type === 'dir') {
+      row.ondblclick = () => {
+        fileNavStack.push(node.children || []);
+        fileNavPaths.push(node.name);
+        renderFileBrowser();
+      };
+      row.ondragover = e => { e.preventDefault(); e.stopPropagation(); row.classList.add('drop-target'); };
+      row.ondragleave = () => row.classList.remove('drop-target');
+      row.ondrop = e => {
+        e.preventDefault(); e.stopPropagation();
+        row.classList.remove('drop-target');
+        _handleDrop(e, [...fileNavPaths, node.name].join('/'));
+      };
+    } else {
+      row.ondblclick = () => openFileEditor(nodePath, node.name);
+    }
+    listEl.appendChild(row);
+  }
+}
+
+function fileBrowserUp() {
+  if (fileNavStack.length > 1) {
+    fileNavStack.pop();
+    fileNavPaths.pop();
+    renderFileBrowser();
+  }
+}
+
+function fileBrowserGoTo(depth) {
+  while (fileNavStack.length > depth + 1) { fileNavStack.pop(); fileNavPaths.pop(); }
+  renderFileBrowser();
+}
+
+// On Linux/WebKit2GTK, dataTransfer.files is empty and getData may also be empty
+// because Tauri intercepts the drop. Parse whatever we can get.
+function getDroppedPaths(e) {
+  const uriList = e.dataTransfer.getData('text/uri-list');
+  const text    = e.dataTransfer.getData('text/plain');
+  console.log('[MCPanel] getDroppedPaths uri-list:', JSON.stringify(uriList), 'text:', JSON.stringify(text));
+  const raw = uriList || text;
+  if (!raw?.trim()) return [];
+  return raw.split(/\r?\n/).map(u => u.trim()).filter(Boolean).map(u => {
+    if (u.startsWith('file://')) { try { return decodeURIComponent(new URL(u).pathname); } catch { return null; } }
+    if (u.startsWith('/')) return u;
+    return null;
+  }).filter(Boolean);
+}
+
+function _handleDrop(e, destDir) {
+  const paths = getDroppedPaths(e);
+  if (paths.length) uploadFilesFromPaths(paths, destDir);
+  else uploadFiles(e.dataTransfer.files, destDir);
+}
+
+function filePanelDragOver(e) { e.preventDefault(); }
+function filePanelDragLeave(e) { }
+function filePanelDrop(e) {
+  e.preventDefault();
+  _handleDrop(e, fileNavPaths.join('/'));
+}
+function fileZoneDragOver(e) {
+  e.preventDefault();
+  document.getElementById('file-drop-zone').classList.add('drop-active');
+}
+function fileZoneDragLeave(e) {
+  document.getElementById('file-drop-zone').classList.remove('drop-active');
+}
+function fileZoneDrop(e) {
+  e.preventDefault();
+  document.getElementById('file-drop-zone').classList.remove('drop-active');
+  _handleDrop(e, fileNavPaths.join('/'));
+}
+
+function handleFileInputChange(e) {
+  uploadFiles(e.target.files, fileNavPaths.join('/'));
+  e.target.value = '';
+}
+
+async function uploadFiles(fileList, dirPath) {
+  if (!fileList || fileList.length === 0) return;
+  const files = Array.from(fileList);
+  const total = files.length;
+  const progressEl = document.getElementById('file-upload-progress');
+  const fillEl = document.getElementById('file-upload-progress-fill');
+  const textEl = document.getElementById('file-upload-progress-text');
+  const dropZone = document.getElementById('file-drop-zone');
+
+  progressEl.classList.remove('hidden');
+  dropZone.style.pointerEvents = 'none';
+
+  let done = 0, errors = 0;
+  for (const file of files) {
+    fillEl.style.width = `${Math.round((done / total) * 100)}%`;
+    textEl.textContent = `Uploading ${file.name} (${done + 1}/${total})`;
+    try {
+      const buf = await file.arrayBuffer();
+      const data = Array.from(new Uint8Array(buf));
+      const rel = dirPath ? `${dirPath}/${file.name}` : file.name;
+      await window.mcpanel.writeServerFile(currentServerId, rel, data);
+      done++;
+    } catch (e) {
+      errors++;
+      textEl.textContent = `Failed: ${file.name}`;
+      toast(`Failed to upload ${file.name}: ${e}`, 'error');
+    }
+  }
+
+  fillEl.style.width = '100%';
+  if (errors === 0) {
+    textEl.textContent = `Done — ${done} file${done > 1 ? 's' : ''} uploaded`;
+    toast(`Uploaded ${done} file${done > 1 ? 's' : ''}`, 'success');
+  } else {
+    textEl.textContent = `${done} uploaded, ${errors} failed`;
+  }
+
+  dropZone.style.pointerEvents = '';
+  setTimeout(() => {
+    progressEl.classList.add('hidden');
+    fillEl.style.width = '0%';
+  }, 3000);
+
+  if (done > 0) {
+    cachedFileTree = null;
+    await openFilesTab();
+  }
+}
+
+async function uploadFilesFromPaths(paths, destDir) {
+  if (!paths.length || !currentServerId) return;
+  const progressEl = document.getElementById('file-upload-progress');
+  const fillEl = document.getElementById('file-upload-progress-fill');
+  const textEl = document.getElementById('file-upload-progress-text');
+  progressEl.classList.remove('hidden');
+  fillEl.style.width = '40%';
+  textEl.textContent = `Copying ${paths.length} file${paths.length !== 1 ? 's' : ''}…`;
+  try {
+    await window.mcpanel.uploadFilesFromPaths(currentServerId, paths, destDir);
+    fillEl.style.width = '100%';
+    textEl.textContent = `Done — ${paths.length} file${paths.length !== 1 ? 's' : ''} uploaded`;
+    toast(`Uploaded ${paths.length} file${paths.length !== 1 ? 's' : ''}`, 'success');
+    cachedFileTree = null;
+    await openFilesTab();
+  } catch (e) {
+    textEl.textContent = 'Upload failed';
+    toast(`Upload failed: ${e}`, 'error');
+  }
+  setTimeout(() => { progressEl.classList.add('hidden'); fillEl.style.width = '0%'; }, 3000);
+}
+
+function fileIcon(name, type) {
+  if (type === 'dir') {
+    return `<svg class="file-icon-dir" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+  }
+  return `<svg class="file-icon-file" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
+}
+
+// ─── File Input Modal ─────────────────────────────────────────────────────────
+
+let _fileInputCallback = null;
+
+function openFileInput(title, label, defaultVal, cb) {
+  _fileInputCallback = cb;
+  document.getElementById('file-input-title').textContent = title;
+  document.getElementById('file-input-label').textContent = label;
+  const inp = document.getElementById('file-input-value');
+  inp.value = defaultVal || '';
+  openModal('modal-file-input');
+  setTimeout(() => { inp.select(); inp.focus(); }, 50);
+}
+
+function submitFileInput() {
+  const val = document.getElementById('file-input-value').value.trim();
+  if (!val) return;
+  closeModal('modal-file-input');
+  if (_fileInputCallback) { _fileInputCallback(val); _fileInputCallback = null; }
+}
+
+// ─── File Editor ──────────────────────────────────────────────────────────────
+
+let _editorRelPath = null;
+
+async function openFileEditor(relPath, name) {
+  _editorRelPath = relPath;
+  document.getElementById('file-editor-title').textContent = name;
+  const saveBtn = document.getElementById('file-editor-save');
+  saveBtn.disabled = true; saveBtn.textContent = 'Loading…';
+  openModal('modal-file-editor');
+  try {
+    const content = await window.mcpanel.readServerFile(currentServerId, relPath);
+    document.getElementById('file-editor-content').value = content;
+    saveBtn.disabled = false; saveBtn.textContent = 'Save';
+  } catch (e) {
+    closeModal('modal-file-editor');
+    toast(String(e), 'error');
+  }
+}
+
+async function saveFileEditor() {
+  if (!_editorRelPath || !currentServerId) return;
+  const saveBtn = document.getElementById('file-editor-save');
+  saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+  try {
+    const content = document.getElementById('file-editor-content').value;
+    const data = Array.from(new TextEncoder().encode(content));
+    await window.mcpanel.writeServerFile(currentServerId, _editorRelPath, data);
+    closeModal('modal-file-editor');
+    toast('File saved', 'success');
+    cachedFileTree = null;
+    await openFilesTab();
+  } catch (e) {
+    toast('Save failed: ' + e, 'error');
+    saveBtn.disabled = false; saveBtn.textContent = 'Save';
+  }
+}
+
+// ─── File Delete / Rename / Create ────────────────────────────────────────────
+
+async function deleteFileEntry(relPath, name, isDir) {
+  const msg = isDir
+    ? `Delete folder "${name}" and all its contents?`
+    : `Delete file "${name}"?`;
+  if (!confirm(msg)) return;
+  try {
+    await window.mcpanel.deleteServerFile(currentServerId, relPath);
+    toast(`Deleted "${name}"`, 'info');
+    cachedFileTree = null;
+    await openFilesTab();
+  } catch (e) {
+    toast('Delete failed: ' + e, 'error');
+  }
+}
+
+async function deleteSelectedFiles() {
+  const count = selectedFilePaths.size;
+  if (!confirm(`Delete ${count} selected item${count !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  const paths = [...selectedFilePaths];
+  let failed = 0;
+  for (const p of paths) {
+    try { await window.mcpanel.deleteServerFile(currentServerId, p); }
+    catch { failed++; }
+  }
+  selectedFilePaths.clear();
+  if (failed === 0) toast(`Deleted ${paths.length} item${paths.length !== 1 ? 's' : ''}`, 'info');
+  else toast(`Deleted ${paths.length - failed}, failed ${failed}`, 'error');
+  cachedFileTree = null;
+  await openFilesTab();
+}
+
+function renameFileEntry(relPath, name) {
+  openFileInput('Rename', 'New name', name, async (newName) => {
+    if (newName === name) return;
+    const parts = relPath.split('/');
+    parts[parts.length - 1] = newName;
+    const newPath = parts.join('/');
+    try {
+      await window.mcpanel.renameServerFile(currentServerId, relPath, newPath);
+      toast(`Renamed to "${newName}"`, 'success');
+      cachedFileTree = null;
+      await openFilesTab();
+    } catch (e) {
+      toast('Rename failed: ' + e, 'error');
+    }
+  });
+}
+
+function createNewFolder() {
+  if (!currentServerId) return;
+  openFileInput('New Folder', 'Folder name', '', async (name) => {
+    const relPath = fileNavPaths.length ? fileNavPaths.join('/') + '/' + name : name;
+    try {
+      await window.mcpanel.createServerDir(currentServerId, relPath);
+      toast(`Folder "${name}" created`, 'success');
+      cachedFileTree = null;
+      await openFilesTab();
+    } catch (e) {
+      toast('Create failed: ' + e, 'error');
+    }
+  });
+}
+
+function createNewFile() {
+  if (!currentServerId) return;
+  openFileInput('New File', 'File name', '', async (name) => {
+    const relPath = fileNavPaths.length ? fileNavPaths.join('/') + '/' + name : name;
+    try {
+      await window.mcpanel.createServerFile(currentServerId, relPath);
+      toast(`File "${name}" created`, 'success');
+      cachedFileTree = null;
+      await openFilesTab();
+    } catch (e) {
+      toast('Create failed: ' + e, 'error');
+    }
+  });
+}
+
+// ─── Inline Settings Tab ──────────────────────────────────────────────────────
+
+const PAPER_SOFTWARES = new Set(['paper', 'purpur', 'folia', 'leaf']);
+
+function openSettingsTab() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  document.getElementById('tsett-name').value = srv.name || '';
+  setRamDropdown('tsett', srv.ram || '2G');
+  document.getElementById('tsett-storage').value = srv.storageLimit || '';
+  document.getElementById('tsett-port').value = srv.port || '';
+  document.getElementById('tsett-group').value = srv.group || '';
+  document.getElementById('tsett-java-args').value = srv.javaArgs || '';
+  document.getElementById('tsett-java-path').value = srv.javaPath || 'java';
+  const proxyBtnRow = document.getElementById('tsett-proxy-btn-row');
+  if (proxyBtnRow) proxyBtnRow.classList.toggle('hidden', !PAPER_SOFTWARES.has(srv.software));
+}
+
+async function saveTabSettings() {
+  const name = document.getElementById('tsett-name').value.trim();
+  if (!name) { toast('Server name is required', 'error'); return; }
+  const ram = getRamValue('tsett');
+  if (!ram) { toast('Please enter a custom RAM value', 'error'); return; }
+  const storageLimit = document.getElementById('tsett-storage').value.trim() || null;
+  const port = parseInt(document.getElementById('tsett-port').value) || null;
+  const group = document.getElementById('tsett-group').value.trim() || null;
+  const javaArgs = document.getElementById('tsett-java-args').value.trim();
+  const javaPath = document.getElementById('tsett-java-path').value.trim() || 'java';
+
+  if (storageLimit) {
+    const bytes = parseStorageLimit(storageLimit);
+    if (bytes === null) { toast('Invalid storage limit format', 'error'); return; }
+  }
+  const deviceErr = validateRamAndStorage(ram, storageLimit);
+  if (deviceErr) { toast(deviceErr, 'error'); return; }
+
+  const updates = { name, ram, storageLimit, port, group, javaArgs, javaPath };
+  const r = await window.mcpanel.updateServer(currentServerId, updates);
+  if (r && r.error) { toast(r.error, 'error'); return; }
+
+  const idx = config.servers.findIndex(s => s.id === currentServerId);
+  if (idx !== -1) config.servers[idx] = { ...config.servers[idx], ...updates };
+  const srv = config.servers[idx];
+
+  document.getElementById('detail-server-name').textContent = name;
+  document.getElementById('detail-server-subtitle').textContent = `${srv.version} · ${capitalise(srv.software)} · Port ${srv.port}`;
+  if (port) document.getElementById('detail-port').textContent = port;
+  const nameEl = document.querySelector(`#card-${currentServerId} .server-card-name`);
+  if (nameEl) nameEl.textContent = name;
+  const sidebarName = document.querySelector(`[data-server-id="${currentServerId}"] .srv-name`);
+  if (sidebarName) sidebarName.textContent = name;
+  renderSidebarServers();
+  refreshDetailStats(currentServerId);
+
+  toast('Settings saved', 'success');
+  switchDetailTab('console');
+}
+
+async function browseJavaTabSettings() {
+  const path = await window.mcpanel.browseJava();
+  if (path) document.getElementById('tsett-java-path').value = path;
+}
+
+// ─── Velocity Proxy Link ─────────────────────────────────────────────────────
+
+async function openVelocityLinkModal() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  await loadProxySection(srv);
+  openModal('modal-velocity-link');
+}
+
+async function loadProxySection(srv) {
+  const velocityServers = config.servers.filter(s => s.software === 'velocity');
+  const sel = document.getElementById('tsett-proxy-velocity');
+  if (velocityServers.length === 0) {
+    sel.innerHTML = '<option value="">No Velocity servers found</option>';
+  } else {
+    sel.innerHTML = velocityServers
+      .map(v => `<option value="${v.id}">${escapeHtml(v.name)}</option>`)
+      .join('');
+  }
+
+  const safeName = (srv.name || '').toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_-]/g, '');
+  document.getElementById('tsett-proxy-name').value = safeName;
+  document.getElementById('tsett-proxy-custom-ip-toggle').checked = false;
+  document.getElementById('tsett-proxy-custom-ip-wrap').classList.add('hidden');
+  document.getElementById('tsett-proxy-custom-ip').value = '';
+
+  if (velocityServers.length > 0) await updateProxyPrioritySlider(velocityServers[0].id);
+}
+
+async function onProxyVelocityChange() {
+  const id = document.getElementById('tsett-proxy-velocity').value;
+  if (id) await updateProxyPrioritySlider(id);
+}
+
+async function updateProxyPrioritySlider(velocityId) {
+  try {
+    const info = await window.mcpanel.proxyInfo(velocityId);
+    const tryList = (info && info.tryList) ? info.tryList : [];
+    const slider = document.getElementById('tsett-proxy-priority');
+    const valEl = document.getElementById('tsett-proxy-priority-val');
+    const labelsEl = document.getElementById('tsett-proxy-priority-labels');
+    slider.max = tryList.length;
+    slider.value = tryList.length;
+    valEl.textContent = tryList.length;
+    labelsEl.innerHTML = tryList.length > 0
+      ? tryList.map((n, i) => `<span>${i}: ${escapeHtml(n)}</span>`).join('') + `<span>${tryList.length}: (end)</span>`
+      : '<span style="opacity:0.55">Try list is empty — this will be the first server</span>';
+  } catch { /* ignore */ }
+}
+
+async function linkToVelocityProxy(btn) {
+  const velocityId = document.getElementById('tsett-proxy-velocity').value;
+  const serverName = document.getElementById('tsett-proxy-name').value.trim();
+  const priority = parseInt(document.getElementById('tsett-proxy-priority').value) || 0;
+  const useCustomIp = document.getElementById('tsett-proxy-custom-ip-toggle').checked;
+  const customIp = useCustomIp ? document.getElementById('tsett-proxy-custom-ip').value.trim() : null;
+
+  if (!velocityId) { toast('Please select a Velocity proxy server', 'error'); return; }
+  if (!serverName) { toast('Please enter a server name', 'error'); return; }
+
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = 'Linking…';
+
+  try {
+    const result = await window.mcpanel.linkToProxy(currentServerId, velocityId, serverName, priority, customIp);
+    if (result && result.error) {
+      toast('Link failed: ' + result.error, 'error');
+    } else {
+      toast('Server linked to Velocity proxy!', 'success');
+      closeModal('modal-velocity-link');
+    }
+  } catch (e) {
+    toast('Link failed: ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
 }
 
 // ─── Quick Controls ───────────────────────────────────────────────────────────
@@ -512,12 +1157,80 @@ function updateDetailControls(running) {
   }
 }
 
+function setPlayersBar(current, max, online) {
+  const barEl = document.getElementById('detail-players-bar');
+  const textEl = document.getElementById('detail-players');
+  if (!textEl) return;
+  if (!online) {
+    if (barEl) barEl.style.width = '0%';
+    textEl.textContent = '0/0';
+    return;
+  }
+  const pct = max > 0 ? Math.min(100, (current / max) * 100) : 0;
+  if (barEl) barEl.style.width = pct + '%';
+  textEl.textContent = `${current}/${max}`;
+}
+
+function formatCap(capStr) {
+  const bytes = parseStorageLimit(capStr);
+  return bytes !== null ? formatBytes(bytes) : (capStr || '—');
+}
+
+function setRamBar(usedBytes, capStr) {
+  const barEl = document.getElementById('detail-ram-bar');
+  const textEl = document.getElementById('detail-ram');
+  if (!textEl) return;
+  const capBytes = parseStorageLimit(capStr);
+  if (capBytes !== null) {
+    const used = usedBytes || 0;
+    const pct = Math.min(100, (used / capBytes) * 100);
+    if (barEl) barEl.style.width = pct + '%';
+    textEl.textContent = `${formatBytes(used)} / ${formatCap(capStr)}`;
+  } else {
+    if (barEl) barEl.style.width = '0%';
+    textEl.textContent = formatCap(capStr);
+  }
+}
+
+function setStorageBar(usedBytes, limitStr) {
+  const barEl = document.getElementById('detail-storage-bar');
+  const textEl = document.getElementById('detail-storage');
+  if (!textEl) return;
+  const used = usedBytes || 0;
+  const usedFmt = formatBytes(used);
+  if (limitStr) {
+    const limitBytes = parseStorageLimit(limitStr);
+    if (limitBytes !== null) {
+      const pct = Math.min(100, (used / limitBytes) * 100);
+      const over = used > limitBytes;
+      if (barEl) {
+        barEl.style.width = pct + '%';
+        barEl.className = `stat-bar-fill ${over ? 'bar-red' : 'bar-purple'}`;
+      }
+      textEl.textContent = `${usedFmt} / ${formatCap(limitStr)}`;
+      textEl.style.color = over ? 'var(--red)' : '';
+      return;
+    }
+  }
+  if (systemInfo.totalStorage) {
+    const pct = Math.min(100, (used / systemInfo.totalStorage) * 100);
+    if (barEl) {
+      barEl.style.width = pct + '%';
+      barEl.className = 'stat-bar-fill bar-purple';
+    }
+    textEl.textContent = `${usedFmt} / ${formatBytes(systemInfo.totalStorage)}`;
+  } else {
+    if (barEl) barEl.style.width = '0%';
+    textEl.textContent = usedFmt;
+  }
+  textEl.style.color = '';
+}
+
 function updateDetailOnline(online, players = 0, maxPlayers = 0, playerList = []) {
   const bigStatus = document.getElementById('big-status-badge');
   bigStatus.className = `big-status ${online ? 'online' : ''}`;
   bigStatus.textContent = online ? 'ONLINE' : 'OFFLINE';
-  const playersEl = document.getElementById('detail-players');
-  if (playersEl) playersEl.textContent = online ? `${players}/${maxPlayers}` : '—';
+  setPlayersBar(players, maxPlayers, online);
   const listEl = document.getElementById('detail-player-list');
   if (listEl) {
     if (online && playerList.length > 0) {
@@ -594,6 +1307,30 @@ function ansiToHtml(text) {
   if (lastIdx < text.length) html += escapeHtml(text.slice(lastIdx));
   if (openSpan) html += '</span>';
   return html;
+}
+
+// ─── Console Poll ─────────────────────────────────────────────────────────────
+async function _pollStep(id) {
+  if (consolePollInterval === null || id !== currentServerId) return;
+  try {
+    const result = await window.mcpanel.getLogSince(id, consoleLogOffset);
+    if (result && id === currentServerId) {
+      consoleLogOffset = result.offset;
+      (result.lines || []).forEach(entry => appendConsoleLine(entry.text || '', entry.type || 'out'));
+    }
+  } catch {}
+  if (consolePollInterval !== null && id === currentServerId) {
+    consolePollInterval = setTimeout(() => _pollStep(id), 50);
+  }
+}
+
+function startConsolePoll(id) {
+  stopConsolePoll();
+  consolePollInterval = setTimeout(() => _pollStep(id), 50);
+}
+
+function stopConsolePoll() {
+  if (consolePollInterval) { clearTimeout(consolePollInterval); consolePollInterval = null; }
 }
 
 // ─── Console Autoscroll ───────────────────────────────────────────────────────
@@ -754,9 +1491,7 @@ async function saveServerSettings() {
 
   document.getElementById('detail-server-name').textContent = name;
   document.getElementById('detail-server-subtitle').textContent = `${srv.version} · ${capitalise(srv.software)} · Port ${srv.port}`;
-  document.getElementById('detail-ram').textContent = ram;
-  document.getElementById('detail-storage').textContent = storageLimit || 'Unlimited';
-  document.getElementById('detail-storage').style.color = '';
+  refreshDetailStats(currentServerId);
   if (port) document.getElementById('detail-port').textContent = port;
 
   const nameEl = document.querySelector(`#card-${currentServerId} .server-card-name`);
@@ -1493,15 +2228,34 @@ function escapeHtml(s) {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  if (bytes === 0) return '0B';
   const k = 1024;
   const sizes = ['B','KB','MB','GB','TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + sizes[i];
 }
 
 // ─── Themes ───────────────────────────────────────────────────────────────────
 let installedThemes = [];
+
+const BUILTIN_THEMES = ['purple-dark', 'clean-dark', 'dark-slate', 'bright-slate'];
+
+async function ensureBuiltinThemes() {
+  for (const id of BUILTIN_THEMES) {
+    const exists = await window.mcpanel.themeExists(id);
+    if (!exists) {
+      try {
+        const [css, json] = await Promise.all([
+          fetch(`/themes/${id}/theme.css`).then(r => r.text()),
+          fetch(`/themes/${id}/theme.json`).then(r => r.text()),
+        ]);
+        await window.mcpanel.installBuiltinTheme(id, css, json);
+      } catch (e) {
+        console.warn(`Failed to install builtin theme ${id}:`, e);
+      }
+    }
+  }
+}
 
 async function loadAndApplyTheme(id) {
   const styleEl = document.getElementById('theme-override');
@@ -1517,18 +2271,22 @@ async function applyTheme(id) {
   await loadAndApplyTheme(id);
   config.activeTheme = id;
   await window.mcpanel.saveConfig(config);
+  const defaultId = await window.mcpanel.getDefaultTheme();
   const theme = installedThemes.find(t => t.id === id);
   document.getElementById('active-theme-name').textContent = theme ? theme.name : id;
-  document.getElementById('reset-theme-btn').style.display = '';
+  document.getElementById('reset-theme-btn').style.display = id !== defaultId ? '' : 'none';
   renderInstalledThemes();
   toast(`Theme "${theme?.name || id}" applied`, 'success');
 }
 
 async function resetTheme() {
-  await loadAndApplyTheme(null);
-  config.activeTheme = null;
+  const defaultId = await window.mcpanel.getDefaultTheme();
+  await loadAndApplyTheme(defaultId);
+  config.activeTheme = defaultId;
   await window.mcpanel.saveConfig(config);
-  document.getElementById('active-theme-name').textContent = 'Default (Purple Dark)';
+  const themes = await window.mcpanel.getThemes();
+  const theme = themes.find(t => t.id === defaultId);
+  document.getElementById('active-theme-name').textContent = theme ? theme.name : defaultId;
   document.getElementById('reset-theme-btn').style.display = 'none';
   renderInstalledThemes();
   toast('Theme reset to default', 'info');
@@ -1562,7 +2320,7 @@ async function renderInstalledThemes() {
       </div>
       <div class="theme-item-actions">
         ${!isActive ? `<button class="btn-xs" style="color:var(--accent);border-color:rgba(168,85,247,0.3)" onclick="applyTheme('${theme.id}')">Apply</button>` : ''}
-        <button class="btn-xs" style="color:var(--red);border-color:rgba(239,68,68,0.25)" onclick="confirmDeleteTheme('${theme.id}')">Delete</button>
+        ${!theme.builtin ? `<button class="btn-xs" style="color:var(--red);border-color:rgba(239,68,68,0.25)" onclick="confirmDeleteTheme('${theme.id}')">Delete</button>` : ''}
       </div>
     `;
     container.appendChild(item);
@@ -1669,6 +2427,148 @@ async function installOnlineTheme(url, btn) {
   btn.textContent = 'Installed';
   await renderInstalledThemes();
   toast(`Theme "${r.theme.name}" installed!`, 'success');
+}
+
+// ─── Embedded Terminal ────────────────────────────────────────────────────────
+let _term = null;
+let _termFit = null;
+let _ptyUnlisten = null;
+let _ptyClosedUnlisten = null;
+
+async function openTerminal() {
+  openModal('modal-terminal');
+  const container = document.getElementById('terminal-container');
+
+  if (!_term) {
+    _term = new Terminal({
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+      fontSize: 13,
+      lineHeight: 1.4,
+      cursorBlink: true,
+      theme: {
+        background: '#0a0a10',
+        foreground: '#f0eeff',
+        cursor: '#a855f7',
+        selectionBackground: 'rgba(168,85,247,0.3)',
+        black: '#000000', red: '#ff6b6b', green: '#22c55e', yellow: '#fbbf24',
+        blue: '#60a5fa', magenta: '#a855f7', cyan: '#22d3ee', white: '#cccccc',
+        brightBlack: '#666666', brightRed: '#ff8888', brightGreen: '#55ff77',
+        brightYellow: '#ffff55', brightBlue: '#7cb9ff', brightMagenta: '#c084fc',
+        brightCyan: '#55ffff', brightWhite: '#ffffff',
+      },
+    });
+    if (window.FitAddon) {
+      _termFit = new FitAddon.FitAddon();
+      _term.loadAddon(_termFit);
+    }
+    _term.open(container);
+    if (_termFit) _termFit.fit();
+    _term.onData(data => window.__TAURI_INTERNALS__.invoke('pty_write', { data }).catch(() => {}));
+    _term.onResize(({ rows, cols }) => {
+      window.__TAURI_INTERNALS__.invoke('pty_resize', { rows, cols }).catch(() => {});
+    });
+    window.addEventListener('resize', () => { if (_termFit) _termFit.fit(); });
+  }
+
+  if (_ptyUnlisten) { _ptyUnlisten(); _ptyUnlisten = null; }
+  if (_ptyClosedUnlisten) { _ptyClosedUnlisten(); _ptyClosedUnlisten = null; }
+
+  try {
+    await window.__TAURI_INTERNALS__.invoke('pty_open');
+    _ptyUnlisten = await window.__TAURI__.event.listen('pty-data', e => _term.write(e.payload));
+    _ptyClosedUnlisten = await window.__TAURI__.event.listen('pty-closed', () => {
+      _term.write('\r\n\x1b[31m[Process exited]\x1b[0m\r\n');
+    });
+    setTimeout(() => { if (_termFit) _termFit.fit(); _term.focus(); }, 50);
+  } catch (e) {
+    toast('Failed to open terminal: ' + String(e), 'error');
+    closeModal('modal-terminal');
+  }
+}
+
+function closeTerminal() {
+  if (_ptyUnlisten) { _ptyUnlisten(); _ptyUnlisten = null; }
+  if (_ptyClosedUnlisten) { _ptyClosedUnlisten(); _ptyClosedUnlisten = null; }
+  window.__TAURI_INTERNALS__.invoke('pty_close').catch(() => {});
+  closeModal('modal-terminal');
+}
+
+// ─── First Start ─────────────────────────────────────────────────────────────
+function openFirstStart() {
+  openModal('modal-first-start');
+}
+
+async function dismissFirstStart() {
+  closeModal('modal-first-start');
+  if (!config.firstStartDone) {
+    config.firstStartDone = true;
+    await window.mcpanel.saveConfig(config);
+  }
+}
+
+// ─── Sidebar Stats ───────────────────────────────────────────────────────────
+async function updateSidebarStats() {
+  const serversEl    = document.getElementById('stat-servers');
+  const ramEl        = document.getElementById('stat-ram');
+  const ramBar       = document.getElementById('stat-ram-bar');
+  const cpuEl        = document.getElementById('stat-cpu');
+  const cpuBar       = document.getElementById('stat-cpu-bar');
+  const storageEl    = document.getElementById('stat-storage');
+  const storageBar   = document.getElementById('stat-storage-bar');
+
+  const total  = config.servers.length;
+  const online = Object.keys(serverStartTimes).length;
+  if (serversEl) serversEl.textContent = `${online} / ${total}`;
+
+  try {
+    const stats = await window.mcpanel.getSystemStats();
+    if (stats && !stats.error) {
+      const ramPct = stats.totalRam > 0 ? Math.round((stats.usedRam / stats.totalRam) * 100) : 0;
+      if (ramEl)  ramEl.textContent = `${ramPct}%`;
+      if (ramBar) {
+        ramBar.style.width = ramPct + '%';
+        ramBar.className = 'sidebar-stat-bar-fill' +
+          (ramPct > 85 ? ' bar-danger' : ramPct > 65 ? ' bar-warn' : '');
+      }
+      const cpuPct = Math.min(stats.cpuPct, 100);
+      if (cpuEl)  cpuEl.textContent = `${cpuPct}%`;
+      if (cpuBar) {
+        cpuBar.style.width = cpuPct + '%';
+        cpuBar.className = 'sidebar-stat-bar-fill' +
+          (cpuPct > 85 ? ' bar-danger' : cpuPct > 65 ? ' bar-warn' : '');
+      }
+    }
+  } catch {}
+
+  if (systemInfo && systemInfo.totalStorage > 0) {
+    const used = systemInfo.totalStorage - (systemInfo.availableStorage || 0);
+    const pct  = Math.round((used / systemInfo.totalStorage) * 100);
+    const TB   = 1024 ** 4;
+    const usedTB  = (used / TB).toFixed(2);
+    const totalTB = (systemInfo.totalStorage / TB).toFixed(2);
+    if (storageEl)  storageEl.textContent = `${usedTB}/${totalTB}TB`;
+    if (storageBar) {
+      storageBar.style.width = pct + '%';
+      storageBar.className = 'sidebar-stat-bar-fill' +
+        (pct > 85 ? ' bar-danger' : pct > 65 ? ' bar-warn' : '');
+    }
+  }
+}
+
+// ─── Velocity ────────────────────────────────────────────────────────────────
+async function copyVelocitySecret() {
+  if (!currentServerId) return;
+  try {
+    const result = await window.mcpanel.getVelocitySecret(currentServerId);
+    if (result && result.secret) {
+      await navigator.clipboard.writeText(result.secret);
+      toast('Forwarding secret copied!', 'success');
+    } else {
+      toast(result?.error || 'Forwarding secret not found', 'error');
+    }
+  } catch {
+    toast('Failed to read forwarding secret', 'error');
+  }
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
