@@ -1,0 +1,21 @@
+#!/bin/bash
+# Post-install script for MCPanel .rpm package.
+# Installs mcpanel-cli so the app works immediately after install.
+
+set -e
+
+install_cli() {
+    if command -v pip3 >/dev/null 2>&1; then
+        pip3 install --user mcpanel-cli >/dev/null 2>&1 && return 0
+    fi
+    if command -v pip >/dev/null 2>&1; then
+        pip install --user mcpanel-cli >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+if ! command -v mcpanel >/dev/null 2>&1; then
+    install_cli || true
+fi
+
+exit 0
