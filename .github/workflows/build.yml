@@ -24,7 +24,6 @@ jobs:
             patchelf \
             libssl-dev \
             pkg-config \
-            rpm-build \
             squashfs-tools \
             libfuse2
 
@@ -38,9 +37,9 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build AppImage, deb, rpm
+      - name: Build AppImage and deb
         working-directory: src-tauri
-        run: cargo tauri build --bundles appimage,deb,rpm
+        run: cargo tauri build --bundles appimage,deb
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
@@ -53,6 +52,39 @@ jobs:
         with:
           name: linux-deb
           path: src-tauri/target/release/bundle/deb/*.deb
+
+  build-linux-rpm:
+    runs-on: ubuntu-22.04
+    container: fedora:41
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            webkit2gtk4.1-devel \
+            libappindicator-gtk3-devel \
+            librsvg2-devel \
+            patchelf \
+            openssl-devel \
+            pkgconf-pkg-config \
+            rpm-build \
+            curl \
+            gcc
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build RPM
+        working-directory: src-tauri
+        run: cargo tauri build --bundles rpm
 
       - name: Upload rpm
         uses: actions/upload-artifact@v4
@@ -117,7 +149,7 @@ jobs:
           path: src-tauri/target/release/bundle/macos/*.app
 
   release:
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-linux-rpm, build-windows, build-macos]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     permissions:
