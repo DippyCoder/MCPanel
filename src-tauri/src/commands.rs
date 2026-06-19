@@ -558,7 +558,11 @@ pub async fn import_server_cmd(args: Vec<String>, app: AppHandle) -> Result<Stri
 
 // ─── Send command via unix socket ─────────────────────────────────────────────
 
+// ─── Send command via unix socket ─────────────────────────────────────────────
+// Unix sockets are only available on Unix-like systems
+
 #[tauri::command]
+#[cfg(unix)]
 pub fn send_server_command(id: String, cmd: String) -> Value {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
@@ -576,6 +580,12 @@ pub fn send_server_command(id: String, cmd: String) -> Value {
         }
         Err(e) => serde_json::json!({"error": format!("Not running: {}", e)}),
     }
+}
+
+#[tauri::command]
+#[cfg(not(unix))]
+pub fn send_server_command(id: String, cmd: String) -> Value {
+    serde_json::json!({"error": "Unix sockets not supported on this platform"})
 }
 
 // ─── TCP Ping ─────────────────────────────────────────────────────────────────
