@@ -21,12 +21,21 @@ check_deps() {
     fi
 
     if [[ "$(uname -s)" == "Linux" ]]; then
-        for pkg in libwebkit2gtk-4.1-dev libssl-dev pkg-config; do
-            dpkg -s "$pkg" >/dev/null 2>&1 || {
-                msg "Installing system dependency: $pkg"
-                sudo apt-get install -y "$pkg"
-            }
-        done
+        if command -v apt-get >/dev/null 2>&1; then
+            for pkg in libwebkit2gtk-4.1-dev libssl-dev pkg-config; do
+                dpkg -s "$pkg" >/dev/null 2>&1 || {
+                    msg "Installing system dependency: $pkg"
+                    sudo apt-get install -y "$pkg"
+                }
+            done
+        elif command -v dnf >/dev/null 2>&1; then
+            for pkg in webkit2gtk4.1-devel openssl-devel pkgconf-pkg-config; do
+                rpm -q "$pkg" >/dev/null 2>&1 || {
+                    msg "Installing system dependency: $pkg"
+                    sudo dnf install -y "$pkg"
+                }
+            done
+        fi
     fi
 }
 
@@ -53,7 +62,11 @@ build_deb() {
 
 build_rpm() {
     msg "Building .rpm package..."
-    sudo apt-get install -y rpm >/dev/null 2>&1 || true
+    if command -v dnf >/dev/null 2>&1; then
+        rpm -q rpm-build >/dev/null 2>&1 || sudo dnf install -y rpm-build
+    elif command -v apt-get >/dev/null 2>&1; then
+        err "RPM builds require a Fedora/RHEL system. Use the GitHub Actions workflow or a Fedora container."
+    fi
     (cd src-tauri && cargo tauri build --bundles rpm)
     ok "Output: $OUT_DIR/rpm/"
 }
