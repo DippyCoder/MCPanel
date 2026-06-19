@@ -24,7 +24,7 @@ jobs:
             patchelf \
             libssl-dev \
             pkg-config \
-            rpm \
+            rpm-build \
             squashfs-tools \
             libfuse2
 
