@@ -960,6 +960,24 @@
   </div>
 </div>
 
+<!-- Privacy Policy Update Modal -->
+<div class="modal-overlay hidden" id="modal-privacy-update">
+  <div class="modal" style="width:480px;text-align:center;padding:0">
+    <div style="padding:40px 40px 32px">
+      <div class="first-start-logo">
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" style="background:var(--bg-elevated);border-radius:14px;padding:12px;box-sizing:border-box"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <h2 class="first-start-title">Privacy Policy Updated</h2>
+      <p class="first-start-sub">The MCPanel Privacy Policy has been updated since you last opened the app. Please review the changes to stay informed about how your data is handled.</p>
+      <p id="privacy-update-date" style="font-size:12px;color:var(--text-secondary);margin-top:-16px"></p>
+    </div>
+    <div class="first-start-footer" style="display:flex;gap:10px">
+      <button class="btn-ghost" style="flex:1;justify-content:center" onclick="closePrivacyUpdateModal()">Dismiss</button>
+      <button class="btn-primary" style="flex:1;justify-content:center" onclick="openPrivacyPolicy()">View Policy</button>
+    </div>
+  </div>
+</div>
+
 <!-- Import Profile Modal -->
 <div class="modal-overlay hidden" id="modal-import-profile">
   <div class="modal">

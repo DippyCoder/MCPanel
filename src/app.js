@@ -87,6 +87,7 @@ async function init() {
   // Silent update checks on startup — populate status and toast if update found
   window.mcpanel.checkUpdate().then(result => applyUpdateResult(result));
   window.mcpanel.checkCliUpdate().then(result => applyCliUpdateResult(result));
+  checkPrivacyPolicy();
 
   // File drag-drop + close notification via the Tauri window handle
   const _win = window.__TAURI__?.window?.getCurrentWindow?.();
@@ -512,6 +513,33 @@ async function confirmEula() {
 function closeEulaModal() {
   document.getElementById('modal-eula').classList.add('hidden');
   pendingEulaServerId = null;
+}
+
+// ─── Privacy Policy Update Check ─────────────────────────────────────────────
+async function checkPrivacyPolicy() {
+  try {
+    const res = await fetch('https://gist.githubusercontent.com/DippyCoder/559659736b49a56964dae2e5c0f5f5dc/raw');
+    if (!res.ok) return;
+    const text = await res.text();
+    const match = text.match(/\*\*Document Last Updated:\*\*\s*(.+)/);
+    if (!match) return;
+    const remoteDate = match[1].trim();
+    const localDate = localStorage.getItem('privacy_policy_date');
+    if (localDate && localDate !== remoteDate) {
+      document.getElementById('privacy-update-date').textContent = remoteDate;
+      document.getElementById('modal-privacy-update').classList.remove('hidden');
+    }
+    localStorage.setItem('privacy_policy_date', remoteDate);
+  } catch (_) {}
+}
+
+function closePrivacyUpdateModal() {
+  document.getElementById('modal-privacy-update').classList.add('hidden');
+}
+
+function openPrivacyPolicy() {
+  window.mcpanel.openExternal('https://get-mcpanel.vercel.app/privacy');
+  closePrivacyUpdateModal();
 }
 
 function updateDetailStarting() {
