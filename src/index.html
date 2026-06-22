@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MCPanel</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <style id="theme-override"></style>
 </head>
@@ -462,6 +460,200 @@
       </div>
     </div>
 
+    <!-- PROFILE DETAIL PAGE -->
+    <div class="page hidden" id="page-profile-detail">
+      <div class="page-header">
+        <div class="back-header">
+          <button class="btn-ghost" onclick="showPage('profiles')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            Back
+          </button>
+          <div>
+            <h1 id="pd-name">Profile</h1>
+            <p class="page-subtitle" id="pd-subtitle">Any Software · Any Version</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-ghost" onclick="window.mcpanel.openProfileFolder(currentProfileId)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Open Folder
+          </button>
+        </div>
+      </div>
+
+      <div class="detail-tab-bar">
+        <button class="detail-tab active" id="ptab-overview" onclick="switchProfileTab('overview')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          Overview
+        </button>
+        <button class="detail-tab" id="ptab-files" onclick="switchProfileTab('files')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Files
+        </button>
+        <button class="detail-tab" id="ptab-settings" onclick="switchProfileTab('settings')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+          Settings
+        </button>
+      </div>
+
+      <div class="detail-layout">
+        <div class="detail-main">
+
+          <!-- Overview Pane -->
+          <div id="pane-profile-overview">
+            <div class="card" style="margin-bottom:16px">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                  Used By Servers
+                </div>
+              </div>
+              <div id="pd-server-list" class="pd-server-list"></div>
+            </div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  About
+                </div>
+              </div>
+              <div id="pd-description" class="pd-description"></div>
+            </div>
+          </div>
+
+          <!-- Files Pane -->
+          <div id="pane-profile-files" class="hidden">
+            <div class="card file-card">
+              <div class="file-toolbar">
+                <div class="file-breadcrumb" id="profile-file-breadcrumb"></div>
+                <button class="btn-ghost-sm" id="profile-file-up-btn" onclick="profileFileBrowserUp()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  Back
+                </button>
+                <button class="btn-ghost-sm" onclick="reloadProfileFileTree()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                  Refresh
+                </button>
+                <button class="btn-ghost-sm" onclick="createNewProfileFolder()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  New Folder
+                </button>
+                <button class="btn-ghost-sm" onclick="createNewProfileFile()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+                  New File
+                </button>
+                <button class="btn-ghost-sm" onclick="window.mcpanel.openProfileFolder(currentProfileId)">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  Open in Explorer
+                </button>
+              </div>
+              <div class="file-list" id="profile-file-list"
+                ondragover="profileFilePanelDragOver(event)"
+                ondrop="profileFilePanelDrop(event)">
+              </div>
+              <div class="file-upload-section">
+                <div class="file-upload-header">
+                  <span class="file-upload-title">Upload</span>
+                  <button class="btn-ghost-sm" onclick="document.getElementById('profile-file-upload-input').click()">Browse files</button>
+                  <input type="file" id="profile-file-upload-input" multiple style="display:none" onchange="handleProfileFileInputChange(event)">
+                </div>
+                <div class="file-drop-zone" id="profile-file-drop-zone"
+                  onclick="document.getElementById('profile-file-upload-input').click()"
+                  ondragover="profileFileZoneDragOver(event)"
+                  ondragleave="profileFileZoneDragLeave(event)"
+                  ondrop="profileFileZoneDrop(event)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.35;display:block;margin:0 auto 6px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  Drag &amp; drop files here, or drop onto a folder above
+                </div>
+                <div class="file-upload-progress hidden" id="profile-file-upload-progress">
+                  <div class="file-upload-progress-bar-wrap">
+                    <div class="file-upload-progress-fill" id="profile-file-upload-progress-fill" style="width:0%"></div>
+                  </div>
+                  <div class="file-upload-progress-text" id="profile-file-upload-progress-text"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Settings Pane -->
+          <div id="pane-profile-settings" class="hidden">
+            <div class="card inline-settings-card">
+              <div class="inline-settings">
+                <div class="form-grid">
+                  <div class="form-group full">
+                    <label>Profile Name</label>
+                    <input type="text" id="ps-name" class="input">
+                  </div>
+                  <div class="form-group full">
+                    <label>Description <span class="label-hint">(optional)</span></label>
+                    <input type="text" id="ps-desc" class="input" placeholder="Pre-configured server with economy plugins">
+                  </div>
+                  <div class="form-group full">
+                    <label>Restrict to Software <span class="label-hint">(optional — empty = any)</span></label>
+                    <div class="checkbox-group" id="ps-software-checks">
+                      <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
+                      <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
+                      <label class="checkbox-item"><input type="checkbox" value="folia"> Folia</label>
+                      <label class="checkbox-item"><input type="checkbox" value="leaf"> Leaf</label>
+                      <label class="checkbox-item"><input type="checkbox" value="vanilla"> Vanilla</label>
+                      <label class="checkbox-item"><input type="checkbox" value="fabric"> Fabric</label>
+                      <label class="checkbox-item"><input type="checkbox" value="velocity"> Velocity</label>
+                      <label class="checkbox-item"><input type="checkbox" value="spigot"> Spigot</label>
+                    </div>
+                  </div>
+                  <div class="form-group full">
+                    <label>Restrict to Versions <span class="label-hint">(comma separated, e.g. 1.21.4,1.21.3)</span></label>
+                    <input type="text" id="ps-versions" class="input" placeholder="Leave empty for any version">
+                  </div>
+                </div>
+                <div class="inline-settings-footer" style="margin-top:24px">
+                  <button class="btn-primary" onclick="saveProfileSettings()">Save Settings</button>
+                  <button class="btn-ghost" onclick="switchProfileTab('overview')">Cancel</button>
+                </div>
+                <div class="danger-zone" style="margin-top:24px">
+                  <div class="danger-zone-title">Danger Zone</div>
+                  <div class="danger-zone-row">
+                    <div>
+                      <div class="danger-zone-label">Delete Profile</div>
+                      <div class="danger-zone-desc">Permanently delete this profile and all its files.</div>
+                    </div>
+                    <button class="btn-sm" style="color:var(--red);border-color:var(--danger-zone-border);flex-shrink:0" onclick="deleteCurrentProfile()">Delete</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Sidebar -->
+        <div class="detail-sidebar">
+          <div class="card">
+            <div class="card-header"><div class="card-title">Profile Info</div></div>
+            <div class="quick-settings">
+              <div class="setting-row">
+                <label>Software</label>
+                <div id="pd-sw-tags" class="profile-tags" style="margin:0"></div>
+              </div>
+              <div class="setting-row">
+                <label>Versions</label>
+                <div id="pd-ver-tags" class="profile-tags" style="margin:0"></div>
+              </div>
+              <div class="setting-row">
+                <label>Created</label>
+                <span id="pd-created" class="mono" style="font-size:12px;color:var(--text-primary)">—</span>
+              </div>
+              <div class="setting-row">
+                <label>ID</label>
+                <span id="pd-id" class="mono" style="font-size:11px;color:var(--text-muted);word-break:break-all">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
     <!-- SETTINGS PAGE -->
     <div class="page hidden" id="page-settings">
       <div class="page-header">
@@ -539,6 +731,19 @@
             <div class="about-item"><span>Supported Software</span><span class="mono">Paper, Purpur, Folia, Leaf, Vanilla, Fabric, Velocity, Spigot</span></div>
             <div class="about-item"><span>Version Fetching</span><span class="mono">Live from official APIs</span></div>
             <div class="about-item"><span>Profile System</span><span class="mono">Folder-based presets</span></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px">
+            <button class="btn-ghost" onclick="window.mcpanel.openExternal('https://github.com/DippyCoder/MCPanel')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577v-2.165c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23a11.52 11.52 0 0 1 3.003-.404c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              MCPanel
+            </button>
+            <button class="btn-ghost" onclick="window.mcpanel.openExternal('https://github.com/DippyCoder/mcpanel-cli')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577v-2.165c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23a11.52 11.52 0 0 1 3.003-.404c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              MCPanel CLI
+            </button>
+          </div>
+          <div class="settings-footer">
+            <button class="settings-footer-link" onclick="window.mcpanel.openExternal('https://get-mcpanel.vercel.app/privacy')">Privacy Policy</button>
           </div>
         </div>
       </div>
@@ -1138,7 +1343,7 @@
       </button>
     </div>
     <div class="modal-body file-editor-body">
-      <textarea id="file-editor-content" class="file-editor-textarea" spellcheck="false"></textarea>
+      <div id="file-editor-content" class="file-editor-ace"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-ghost" onclick="closeModal('modal-file-editor')">Cancel</button>
@@ -1149,6 +1354,7 @@
 
 <!-- Toast -->
 <div class="toast-container" id="toast-container"></div>
+
 
 <!-- First Start Modal -->
 <div class="modal-overlay hidden" id="modal-first-start">
@@ -1255,9 +1461,19 @@
   </div>
 </div>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<link rel="stylesheet" href="lib/xterm.css">
+<script src="lib/xterm.js"></script>
+<script src="lib/xterm-addon-fit.js"></script>
+<script src="lib/ace-ace.js"></script>
+<script src="lib/ace-mode-yaml.js"></script>
+<script src="lib/ace-mode-json.js"></script>
+<script src="lib/ace-mode-properties.js"></script>
+<script src="lib/ace-mode-toml.js"></script>
+<script src="lib/ace-mode-xml.js"></script>
+<script src="lib/ace-mode-text.js"></script>
+<script src="lib/ace-theme-tomorrow_night.js"></script>
+<script src="lib/ace-theme-github.js"></script>
+<script src="lib/js-yaml.js"></script>
 <script src="tauri-bridge.js"></script>
 <script src="app.js"></script>
 </body>

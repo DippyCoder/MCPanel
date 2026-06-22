@@ -78,6 +78,12 @@ fn mcpanel_cmd() -> std::process::Command {
     // system Python is used when mcpanel is invoked.
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
+    // Prevent a console window from flashing on Windows for each subprocess.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     cmd
 }
 
@@ -89,6 +95,8 @@ fn mcpanel_async_cmd() -> tokio::process::Command {
     cmd.env("PATH", format!("{}:{}", extra, path));
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     cmd
 }
 
@@ -116,7 +124,7 @@ pub fn check_cli() -> Value {
         Err(e) => serde_json::json!({
             "ok": false,
             "error": format!(
-                "mcpanel CLI not found.\nInstall it with:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git\n({})",
+                "mcpanel CLI not found.\nInstall it with:  pip3 install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip\n({})",
                 e
             )
         }),
@@ -676,6 +684,31 @@ pub async fn ping_server(host: String, port: u16) -> Value {
 
 // ─── Theme management ─────────────────────────────────────────────────────────
 
+#[tauri::command]
+pub fn ensure_builtin_themes() -> Result<(), String> {
+    const THEMES: &[(&str, &str, &str)] = &[
+        ("purple-dark",
+         include_str!("../../src/themes/purple-dark/theme.css"),
+         include_str!("../../src/themes/purple-dark/theme.json")),
+        ("clean-dark",
+         include_str!("../../src/themes/clean-dark/theme.css"),
+         include_str!("../../src/themes/clean-dark/theme.json")),
+        ("dark-slate",
+         include_str!("../../src/themes/dark-slate/theme.css"),
+         include_str!("../../src/themes/dark-slate/theme.json")),
+        ("bright-slate",
+         include_str!("../../src/themes/bright-slate/theme.css"),
+         include_str!("../../src/themes/bright-slate/theme.json")),
+    ];
+    for (id, css, json) in THEMES {
+        let theme_dir = format!("{}/{}", mcpanel_themes_dir(), id);
+        std::fs::create_dir_all(&theme_dir).map_err(|e| e.to_string())?;
+        std::fs::write(format!("{}/theme.css", theme_dir), css).map_err(|e| e.to_string())?;
+        std::fs::write(format!("{}/theme.json", theme_dir), json).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn default_theme_path() -> String {
     format!("{}/default-theme", mcpanel_home())
 }
@@ -749,11 +782,52 @@ pub fn delete_theme(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn check_app_update() -> Value {
+    let url = "https://api.github.com/repos/DippyCoder/MCPanel/releases/latest";
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "10", "-H", "User-Agent: MCPanel", url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000);
+    }
+    match curl.output() {
+        Ok(o) if o.status.success() => {
+            serde_json::from_slice(&o.stdout).unwrap_or(Value::Null)
+        }
+        _ => Value::Null,
+    }
+}
+
+#[tauri::command]
+pub fn check_cli_update() -> Value {
+    let url = "https://api.github.com/repos/DippyCoder/mcpanel-cli/releases/latest";
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "10", "-H", "User-Agent: MCPanel", url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000);
+    }
+    match curl.output() {
+        Ok(o) if o.status.success() => {
+            serde_json::from_slice(&o.stdout).unwrap_or(Value::Null)
+        }
+        _ => Value::Null,
+    }
+}
+
+#[tauri::command]
 pub fn fetch_github_themes() -> Value {
     let url = "https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/themes-index.json";
-    let out = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "10", url])
-        .output();
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "10", url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let out = curl.output();
     match out {
         Ok(o) if o.status.success() => {
             let body = String::from_utf8_lossy(&o.stdout);
@@ -777,10 +851,14 @@ pub fn install_theme_from_url(url: String) -> Result<Value, String> {
         .unwrap_or_default()
         .as_millis();
     let tmp = format!("{}/._download_{}.zip", themes_dir, ts);
-    let status = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "60", "-o", &tmp, &url])
-        .status()
-        .map_err(|e| e.to_string())?;
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "60", "-o", &tmp, &url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let status = curl.status().map_err(|e| e.to_string())?;
     let result = if status.success() {
         _install_theme_zip(&tmp)
     } else {
@@ -1032,21 +1110,54 @@ fn filepath_to_string(p: tauri_plugin_dialog::FilePath) -> String {
 
 #[tauri::command]
 pub async fn install_cli() -> Result<String, String> {
-    const GITHUB_URL: &str = "git+https://github.com/DippyCoder/mcpanel-cli.git";
-    for pip in &["pip3", "pip"] {
-        let out = tokio::process::Command::new(pip)
-            .args(["install", "--user", GITHUB_URL])
-            .output()
-            .await;
-        match out {
+    // Zip archive URL — pip downloads it directly, no git required on any platform.
+    const ZIP_URL: &str =
+        "https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip";
+
+    // Platform-specific candidate commands.
+    // Each entry is (program, args_before_url):
+    //   program install --user <ZIP_URL>
+    #[cfg(windows)]
+    let candidates: &[(&str, &[&str])] = &[
+        // py is the Python Launcher, standard on Windows installs
+        ("py",      &["-m", "pip", "install", "--user"]),
+        ("pip",     &["install", "--user"]),
+        ("python",  &["-m", "pip", "install", "--user"]),
+    ];
+    #[cfg(not(windows))]
+    let candidates: &[(&str, &[&str])] = &[
+        ("pip3",    &["install", "--user"]),
+        ("pip",     &["install", "--user"]),
+        ("python3", &["-m", "pip", "install", "--user"]),
+    ];
+
+    let mut last_err = String::new();
+    for (prog, prefix_args) in candidates {
+        let mut cmd = tokio::process::Command::new(prog);
+        cmd.args(*prefix_args);
+        cmd.arg(ZIP_URL);
+        #[cfg(windows)]
+        { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
+        match cmd.output().await {
             Ok(o) if o.status.success() => {
-                log_to_file("install_cli: mcpanel-cli installed from GitHub");
+                log_to_file("install_cli: mcpanel-cli installed from GitHub zip");
                 return Ok("mcpanel-cli installed successfully".into());
             }
-            _ => continue,
+            Ok(o) => {
+                last_err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            }
+            Err(e) => { last_err = e.to_string(); }
         }
     }
-    Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git".into())
+
+    #[cfg(windows)]
+    let hint = "py -m pip install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip";
+    #[cfg(not(windows))]
+    let hint = "pip3 install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip";
+
+    Err(format!(
+        "Could not install mcpanel-cli. Make sure Python and pip are installed, then run:\n  {hint}\nLast error: {last_err}"
+    ))
 }
 
 // ─── File upload ──────────────────────────────────────────────────────────────
@@ -1205,6 +1316,169 @@ pub fn read_server_file(id: String, rel_path: String) -> Result<String, String> 
         return Err("File too large to edit in-app (max 5MB)".into());
     }
     std::fs::read_to_string(&target).map_err(|_| "File is binary or cannot be read as text".into())
+}
+
+// ─── Profile file system ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn update_profile(id: String, name: Option<String>, description: Option<String>, software: Option<Vec<String>>, versions: Option<Vec<String>>) -> Result<(), String> {
+    let dir = format!("{}/profiles/{}", mcpanel_home(), id);
+    let profile_json = format!("{}/profile.json", dir);
+    let content = std::fs::read_to_string(&profile_json).map_err(|e| e.to_string())?;
+    let mut profile: serde_json::Map<String, Value> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    if let Some(v) = name        { profile.insert("name".into(), Value::String(v)); }
+    if let Some(v) = description { profile.insert("description".into(), Value::String(v)); }
+    if let Some(v) = software    { profile.insert("software".into(), Value::Array(v.into_iter().map(Value::String).collect())); }
+    if let Some(v) = versions    { profile.insert("versions".into(), Value::Array(v.into_iter().map(Value::String).collect())); }
+    let out = serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?;
+    std::fs::write(&profile_json, out).map_err(|e| e.to_string())
+}
+
+fn get_profile_dir(id: &str) -> Result<String, String> {
+    let dir = format!("{}/profiles/{}", mcpanel_home(), id);
+    if std::path::Path::new(&dir).is_dir() {
+        Ok(dir)
+    } else {
+        Err("Profile not found".into())
+    }
+}
+
+fn walk_dir_tree(path: &std::path::Path, base: &std::path::Path) -> Value {
+    let mut entries: Vec<Value> = vec![];
+    if let Ok(read_dir) = std::fs::read_dir(path) {
+        let mut items: Vec<_> = read_dir.flatten().collect();
+        items.sort_by_key(|e| e.file_name());
+        for entry in items {
+            let Ok(meta) = entry.metadata() else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let rel = entry.path()
+                .strip_prefix(base).unwrap_or(&entry.path())
+                .to_string_lossy().replace('\\', "/");
+            if meta.is_dir() {
+                entries.push(serde_json::json!({
+                    "name": name, "type": "dir", "path": rel,
+                    "children": walk_dir_tree(&entry.path(), base)
+                }));
+            } else {
+                entries.push(serde_json::json!({
+                    "name": name, "type": "file", "path": rel, "size": meta.len()
+                }));
+            }
+        }
+    }
+    Value::Array(entries)
+}
+
+#[tauri::command]
+pub fn get_profile_file_tree(id: String) -> Value {
+    match get_profile_dir(&id) {
+        Ok(dir) => {
+            let base = std::path::PathBuf::from(&dir);
+            serde_json::json!({ "tree": walk_dir_tree(&base, &base) })
+        }
+        Err(e) => serde_json::json!({ "error": e }),
+    }
+}
+
+#[tauri::command]
+pub fn read_profile_file(id: String, rel_path: String) -> Result<String, String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    let meta = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if meta.len() > 5 * 1024 * 1024 {
+        return Err("File too large to edit in-app (max 5MB)".into());
+    }
+    std::fs::read_to_string(&target).map_err(|_| "File is binary or cannot be read as text".into())
+}
+
+#[tauri::command]
+pub fn write_profile_file(id: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&dest, &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_profile_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    if !target.exists() { return Err("File not found".into()); }
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(&target).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn create_profile_dir(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    std::fs::create_dir_all(std::path::Path::new(&dir).join(&rel_path)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_profile_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if dest.exists() { return Err("A file with that name already exists".into()); }
+    std::fs::write(&dest, "").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_profile_file(id: String, old_path: String, new_path: String) -> Result<(), String> {
+    if old_path.contains("..") || old_path.starts_with('/')
+        || new_path.contains("..") || new_path.starts_with('/')
+    {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let base = std::path::Path::new(&dir);
+    let src = base.join(&old_path);
+    let dst = base.join(&new_path);
+    if !src.exists() { return Err("Source not found".into()); }
+    if dst.exists() { return Err("A file with that name already exists".into()); }
+    std::fs::rename(&src, &dst).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upload_files_to_profile(id: String, src_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    if !dest_dir.is_empty() && (dest_dir.contains("..") || dest_dir.starts_with('/')) {
+        return Err("Invalid destination path".into());
+    }
+    let profile_dir = get_profile_dir(&id)?;
+    let base = std::path::Path::new(&profile_dir);
+    let dest_base = if dest_dir.is_empty() { base.to_path_buf() } else { base.join(&dest_dir) };
+    std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
+    for src_path in &src_paths {
+        let src = std::path::Path::new(src_path);
+        if src.is_file() {
+            if let Some(name) = src.file_name() {
+                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────

@@ -22,8 +22,11 @@
   --purple-100:   #dbeafe;
 
   --accent:       #2563eb;
+  --accent-rgb:   37,99,235;
   --accent-glow:  rgba(37, 99, 235, 0.2);
   --accent-dim:   rgba(37, 99, 235, 0.08);
+  --console-bg:        #1e293b;
+  --console-input-bg:  #0f172a;
 
   --text-primary:   #0f172a;
   --text-secondary: #475569;
@@ -203,3 +206,41 @@ select option { background: #ffffff; color: #0f172a; }
 
 /* Active theme bar */
 .active-theme-name { color: var(--accent); }
+
+/* ── Semantic token overrides ───────────────────────── */
+:root {
+  --online-color:   #16a34a;
+  --offline-color:  var(--text-muted);
+  --starting-color: #d97706;
+  --starting-rgb:   217,119,6;
+
+  --log-text:       #cbd5e1;
+  --log-error:      #ef4444;
+  --log-warn:       #d97706;
+  --log-system:     var(--accent);
+
+  --info-box-bg:       rgba(37,99,235,0.07);
+  --info-box-border:   rgba(37,99,235,0.2);
+  --info-box-text:     #1e40af;
+
+  --warning-box-bg:     rgba(217,119,6,0.08);
+  --warning-box-border: rgba(217,119,6,0.3);
+  --warning-box-text:   #92400e;
+
+  --danger-zone-bg:          rgba(239,68,68,0.06);
+  --danger-zone-border:      rgba(239,68,68,0.2);
+  --danger-zone-title-color: #dc2626;
+
+  --toast-success-bg:     rgba(21,128,61,0.92);
+  --toast-success-border: rgba(34,197,94,0.3);
+  --toast-success-text:   #bbf7d0;
+  --toast-error-bg:       rgba(153,27,27,0.92);
+  --toast-error-border:   rgba(239,68,68,0.3);
+  --toast-error-text:     #fecaca;
+  --toast-info-bg:        rgba(219,234,254,0.97);
+  --toast-info-border:    rgba(37,99,235,0.3);
+  --toast-info-text:      #1e40af;
+
+  --bar-green-bg:  rgba(34,197,94,0.4);
+  --bar-red-bg:    rgba(239,68,68,0.45);
+}

@@ -1,9 +1,9 @@
 {
-  "name": "Bright Slate",
+  "name": "Clean Dark",
   "creator": "DippyCoder",
   "creatorUrl": "https://github.com/DippyCoder",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "appVersion": "2.1.1",
-  "description": "A clean light theme with blue accents.",
+  "description": "Just like Dark Slate but cleaner.",
   "builtin": true
 }

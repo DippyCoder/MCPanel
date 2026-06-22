@@ -1,6 +1,6 @@
 #!/bin/bash
 # MCPanel Build Script (Tauri)
-# Usage: ./build.sh [appimage|deb|rpm|linux|all|clean]
+# Usage: ./build.sh [appimage|deb|rpm|linux|all|windows|clean]
 #        No argument → interactive menu
 
 set -euo pipefail
@@ -71,6 +71,22 @@ build_rpm() {
     ok "Output: $OUT_DIR/rpm/"
 }
 
+build_windows() {
+    msg "Cross-compiling Windows NSIS installer (.exe) for x86_64..."
+    if command -v apt-get >/dev/null 2>&1; then
+        for pkg in mingw-w64 nsis; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || { msg "Installing $pkg..."; sudo apt-get install -y "$pkg"; }
+        done
+    elif command -v dnf >/dev/null 2>&1; then
+        for pkg in mingw64-gcc mingw64-winpthreads-static nsis; do
+            rpm -q "$pkg" >/dev/null 2>&1 || { msg "Installing $pkg..."; sudo dnf install -y "$pkg"; }
+        done
+    fi
+    rustup target add x86_64-pc-windows-gnu
+    (cd src-tauri && cargo tauri build --target x86_64-pc-windows-gnu --bundles nsis)
+    ok "NSIS installer → src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/"
+}
+
 do_clean() {
     msg "Cleaning build artifacts (src-tauri/target/)..."
     rm -rf src-tauri/target
@@ -85,9 +101,10 @@ if [ -n "${1:-}" ]; then
         deb)         build_deb ;;
         rpm)         build_rpm ;;
         linux|all)   build_all ;;
+        windows)     build_windows ;;
         clean)       do_clean ;;
         *)
-            echo "Usage: $0 [appimage|deb|rpm|linux|all|clean]"
+            echo "Usage: $0 [appimage|deb|rpm|linux|all|windows|clean]"
             exit 1
             ;;
     esac
@@ -98,13 +115,14 @@ echo ""
 echo "  MCPanel Build Tool (Tauri)"
 echo "  =========================="
 echo ""
-echo "    [1]  Linux  (AppImage + .deb + .rpm)   →  $OUT_DIR/"
-echo "    [2]  Linux  AppImage only"
-echo "    [3]  Linux  .deb  (Debian / Ubuntu)"
-echo "    [4]  Linux  .rpm  (Fedora / RHEL)"
-echo "    [5]  Clean build artifacts"
+echo "    [1]  Linux   AppImage + .deb + .rpm   →  $OUT_DIR/"
+echo "    [2]  Linux   AppImage only"
+echo "    [3]  Linux   .deb  (Debian / Ubuntu)"
+echo "    [4]  Linux   .rpm  (Fedora / RHEL)"
+echo "    [5]  Windows cross-compile NSIS installer (.exe)"
+echo "    [6]  Clean build artifacts"
 echo ""
-read -rp "  Enter choice (1-5): " CHOICE
+read -rp "  Enter choice (1-6): " CHOICE
 echo ""
 
 case "$CHOICE" in
@@ -112,7 +130,8 @@ case "$CHOICE" in
     2) build_appimage ;;
     3) build_deb ;;
     4) build_rpm ;;
-    5) do_clean ;;
+    5) build_windows ;;
+    6) do_clean ;;
     *) err "Invalid choice." ;;
 esac
 

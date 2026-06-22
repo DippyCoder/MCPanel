@@ -241,6 +241,25 @@
     readServerFile: (id, relPath) =>
       _invoke('read_server_file', { id, relPath }),
 
+    updateProfile: (id, data) =>
+      _invoke('update_profile', { id, ...data }),
+    getProfileFileTree: (id) =>
+      _invoke('get_profile_file_tree', { id }),
+    readProfileFile: (id, relPath) =>
+      _invoke('read_profile_file', { id, relPath }),
+    writeProfileFile: (id, relPath, data) =>
+      _invoke('write_profile_file', { id, relPath, data }),
+    deleteProfileFile: (id, relPath) =>
+      _invoke('delete_profile_file', { id, relPath }),
+    createProfileDir: (id, relPath) =>
+      _invoke('create_profile_dir', { id, relPath }),
+    createProfileFile: (id, relPath) =>
+      _invoke('create_profile_file', { id, relPath }),
+    renameProfileFile: (id, oldPath, newPath) =>
+      _invoke('rename_profile_file', { id, oldPath, newPath }),
+    uploadFilesToProfile: (id, srcPaths, destDir) =>
+      _invoke('upload_files_to_profile', { id, srcPaths, destDir }),
+
     createProfileFromServer: async (id, profileData, selectedPaths) => {
       const args = [
         '-id', id,
@@ -290,9 +309,8 @@
     checkUpdate: async () => {
       try {
         const current = await _invoke('get_app_version');
-        const res = await fetch('https://api.github.com/repos/dippycoder/mcpanel/releases/latest');
-        if (!res.ok) return { current, latest: null, hasUpdate: false };
-        const data = await res.json();
+        const data = await _invoke('check_app_update');
+        if (!data) return { current, latest: null, hasUpdate: false };
         const latest = data.tag_name ? data.tag_name.replace(/^v/, '') : null;
         const hasUpdate = !!(current && latest && semverGt(latest, current));
         return { current, latest, hasUpdate, url: data.html_url || '' };
@@ -305,9 +323,8 @@
       try {
         const cliInfo = await _invoke('check_cli');
         const current = (cliInfo && cliInfo.ok && cliInfo.version) ? cliInfo.version : null;
-        const res = await fetch('https://api.github.com/repos/dippycoder/mcpanel-cli/releases/latest');
-        if (!res.ok) return { current, latest: null, hasUpdate: false };
-        const data = await res.json();
+        const data = await _invoke('check_cli_update');
+        if (!data) return { current, latest: null, hasUpdate: false };
         const latest = data.tag_name ? data.tag_name.replace(/^v/, '') : null;
         const hasUpdate = !!(current && latest && semverGt(latest, current));
         const url = data.html_url || 'https://github.com/dippycoder/mcpanel-cli/releases/latest';
@@ -328,6 +345,7 @@
     },
 
     // Themes — all handled natively in Rust, no CLI involvement
+    ensureBuiltinThemes: () => _invoke('ensure_builtin_themes'),
     getThemes: () => _invoke('get_themes'),
     getThemeCss: (id) => _invoke('get_theme_css', { id }),
     deleteTheme: (id) => _invoke('delete_theme', { id }),

@@ -1,5 +1,5 @@
 # MCPanel Build Script (Windows / PowerShell)
-# Usage: .\build-windows.ps1 [nsis|all|clean]
+# Usage: .\build-windows.ps1 [nsis|all|linux|clean]
 #        No argument → interactive menu
 
 $ErrorActionPreference = "Stop"
@@ -43,6 +43,25 @@ function Build-All {
     Ok "MSI  → $OUT_DIR\msi\"
 }
 
+function Build-Linux {
+    Msg "Cross-compiling Linux binary (x86_64-unknown-linux-gnu) via 'cross'..."
+    if (-not (Get-Command cross -ErrorAction SilentlyContinue)) {
+        Msg "'cross' not found – installing (requires Docker Desktop to be running)..."
+        cargo install cross --locked
+        if ($LASTEXITCODE -ne 0) { Err "Failed to install 'cross'." }
+    }
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        Err "Docker Desktop is required for Linux cross-compilation. Install from: https://www.docker.com/products/docker-desktop"
+    }
+    rustup target add x86_64-unknown-linux-gnu
+    Push-Location src-tauri
+    cross build --target x86_64-unknown-linux-gnu --release
+    if ($LASTEXITCODE -ne 0) { Err "Build failed." }
+    Pop-Location
+    Ok "Binary → src-tauri\target\x86_64-unknown-linux-gnu\release\mcpanel"
+    Msg "Note: Linux installers (AppImage/deb/rpm) require a Linux machine or the CI workflow."
+}
+
 function Do-Clean {
     Msg "Cleaning build artifacts (src-tauri\target\)..."
     Remove-Item -Recurse -Force "src-tauri\target" -ErrorAction SilentlyContinue
@@ -53,10 +72,11 @@ Check-Deps
 
 if ($args.Count -gt 0) {
     switch ($args[0]) {
-        "nsis"  { Build-Nsis; exit 0 }
-        "all"   { Build-All;  exit 0 }
-        "clean" { Do-Clean;   exit 0 }
-        default { Write-Host "Usage: .\build-windows.ps1 [nsis|all|clean]"; exit 1 }
+        "nsis"  { Build-Nsis;  exit 0 }
+        "all"   { Build-All;   exit 0 }
+        "linux" { Build-Linux; exit 0 }
+        "clean" { Do-Clean;    exit 0 }
+        default { Write-Host "Usage: .\build-windows.ps1 [nsis|all|linux|clean]"; exit 1 }
     }
 }
 
@@ -66,15 +86,17 @@ Write-Host "  ====================================="
 Write-Host ""
 Write-Host "    [1]  Windows  NSIS + MSI  ->  $OUT_DIR\"
 Write-Host "    [2]  Windows  NSIS installer (.exe) only"
-Write-Host "    [3]  Clean build artifacts"
+Write-Host "    [3]  Linux    cross-compile binary (requires Docker Desktop)"
+Write-Host "    [4]  Clean build artifacts"
 Write-Host ""
-$choice = Read-Host "  Enter choice (1-3)"
+$choice = Read-Host "  Enter choice (1-4)"
 Write-Host ""
 
 switch ($choice) {
     "1" { Build-All }
     "2" { Build-Nsis }
-    "3" { Do-Clean }
+    "3" { Build-Linux }
+    "4" { Do-Clean }
     default { Err "Invalid choice." }
 }
 

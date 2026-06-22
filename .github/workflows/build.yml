@@ -107,15 +107,21 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build MSI installer
+      - name: Build Windows installers
         working-directory: src-tauri
-        run: cargo tauri build --bundles msi
+        run: cargo tauri build --bundles nsis,msi
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
         with:
           name: windows-msi
           path: src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Upload NSIS
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
 
   build-macos:
     runs-on: macos-latest
@@ -132,21 +138,15 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build DMG and App
+      - name: Build DMG
         working-directory: src-tauri
-        run: cargo tauri build --bundles dmg,app
+        run: cargo tauri build --bundles dmg
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: src-tauri/target/release/bundle/macos/*.dmg
-
-      - name: Upload App
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-app
-          path: src-tauri/target/release/bundle/macos/*.app
+          path: src-tauri/target/release/bundle/dmg/*.dmg
 
   release:
     needs: [build-linux, build-linux-rpm, build-windows, build-macos]
@@ -165,5 +165,5 @@ jobs:
             linux-deb/*.deb
             linux-rpm/*.rpm
             windows-msi/*.msi
+            windows-nsis/*-setup.exe
             macos-dmg/*.dmg
-            macos-app/*.app
