@@ -43,6 +43,9 @@
       }
     },
     "shortDescription": "Minecraft Server Panel",
+    "resources": {
+      "../scripts/win-install-cli.ps1": "win-install-cli.ps1"
+    },
     "windows": {
       "wix": {
         "fragmentPaths": ["../scripts/wix-cli-install.wxs"]

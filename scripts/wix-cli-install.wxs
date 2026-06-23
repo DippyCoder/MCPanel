@@ -1,21 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  WiX fragment: install mcpanel-cli via pip and add its Scripts directory to the
-  MACHINE PATH (HKLM) during MSI installation.  The MSI always runs elevated, so
-  writing to HKLM is permitted.  Deferred + Impersonate="yes" means the CA runs
-  as the actual installing user (correct %APPDATA% for pip --user) while still
-  holding the admin token needed for HKLM writes.
-
-  WiX property-format escaping used inside ExeCommand (single-quoted XML attr):
-    {  ->  [\{]      }  ->  [\}]
-    [  ->  [\[]      ]  ->  [\]]
-    '  ->  &apos;    &  ->  &amp;
-    "  unchanged (safe in single-quoted XML attr)
-
-  chr() is used for the sysconfig string args to avoid quote nesting inside a
-  PowerShell single-quoted -c string inside a double-quoted -Command string:
-    chr(115)+chr(99)+chr(114)+chr(105)+chr(112)+chr(116)+chr(115) = "scripts"
-    chr(110)+chr(116)+chr(95)+chr(117)+chr(115)+chr(101)+chr(114) = "nt_user"
+  WiX fragment: install mcpanel-cli after MSI installation.
+  win-install-cli.ps1 is bundled as a resource (bundle.resources in tauri.conf.json)
+  and lands in INSTALLDIR, where this CA picks it up.
+  Deferred + Impersonate="yes" = runs as the installing user (correct %APPDATA% for
+  pip --user) while still holding the admin token needed to write the machine PATH.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
@@ -25,11 +14,11 @@
       Execute='deferred'
       Impersonate='yes'
       Return='ignore'
-      ExeCommand='powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "foreach ($py in @(&apos;py&apos;,&apos;python&apos;,&apos;python3&apos;)) [\{] try [\{] &amp; $py -m pip install --user &apos;https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip&apos; 2>&amp;1 | Out-Null [\}] catch [\{][\}]; if ($LASTEXITCODE -eq 0) [\{] $s = (&amp; $py -c &apos;import sysconfig;print(sysconfig.get_path(chr(115)+chr(99)+chr(114)+chr(105)+chr(112)+chr(116)+chr(115),chr(110)+chr(116)+chr(95)+chr(117)+chr(115)+chr(101)+chr(114)))&apos; 2>$null).Trim(); if ($s) [\{] $p = [\[]Environment[\]]::GetEnvironmentVariable(&apos;PATH&apos;,&apos;Machine&apos;); if ($p -notlike &apos;*&apos;+$s+&apos;*&apos;) [\{] [\[]Environment[\]]::SetEnvironmentVariable(&apos;PATH&apos;,$p.TrimEnd(&apos;;&apos;)+&apos;;&apos;+$s,&apos;Machine&apos;) [\}] [\}]; break [\}] [\}]"'
+      ExeCommand='powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File win-install-cli.ps1'
     />
     <InstallExecuteSequence>
-      <!-- Run on install and upgrade, not on uninstall -->
-      <Custom Action='InstallMCPanelCLI' Before='InstallFinalize'>NOT REMOVE</Custom>
+      <!-- Run after files are written to disk, on install and upgrade but not uninstall -->
+      <Custom Action='InstallMCPanelCLI' After='InstallFiles'>NOT REMOVE</Custom>
     </InstallExecuteSequence>
   </Fragment>
 </Wix>
