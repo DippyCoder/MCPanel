@@ -53,6 +53,11 @@
   function close() {
     _invoke('quit_app');
   }
+  function startResizeDragging(direction) {
+    const w = _currentWindow();
+    if (w) w.startResizeDragging(direction);
+    else _invoke('plugin:window|start_resize_dragging', { value: direction });
+  }
 
   // ─── Public API ──────────────────────────────────────────────────────────────
   window.mcpanel = {
@@ -376,6 +381,7 @@
     minimize,
     maximize,
     close,
+    startResizeDragging,
   };
 
   // ─── Semver helper (used by checkCliUpdate) ──────────────────────────────────

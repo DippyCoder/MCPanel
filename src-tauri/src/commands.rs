@@ -21,6 +21,26 @@ pub fn mcpanel_home() -> String {
     if let Ok(v) = std::env::var("MCPANEL_HOME") {
         return v;
     }
+    // Must match the path returned by each platform's CLI (mcpanel/paths.py).
+    #[cfg(windows)]
+    {
+        // Matches Electron's app.getPath('userData') on Windows: %APPDATA%\mcpanel
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
+            format!(
+                "{}/AppData/Roaming",
+                std::env::var("USERPROFILE").unwrap_or_else(|_| "C:/Users/Default".into())
+            )
+        });
+        return format!("{}/mcpanel", appdata);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Matches Electron's app.getPath('userData') on macOS:
+        // ~/Library/Application Support/mcpanel
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        return format!("{}/Library/Application Support/mcpanel", home);
+    }
+    // Linux: $XDG_CONFIG_HOME/mcpanel or ~/.config/mcpanel
     let base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
         format!(
             "{}/.config",
@@ -63,40 +83,80 @@ fn log_to_file(line: &str) {
 
 // ─── CLI runner ───────────────────────────────────────────────────────────────
 
+// On Windows, pip --user installs to %APPDATA%\Python\Python3XX\Scripts\ which is
+// not on PATH by default. Enumerate the common locations so mcpanel is always
+// found regardless of whether the user updated their PATH.
+#[cfg(windows)]
+fn windows_python_scripts_paths() -> String {
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let mut paths = Vec::new();
+    // Check Python 3.8–3.14 (newest first so the latest takes precedence)
+    for minor in (8u32..=14).rev() {
+        let candidates = [
+            format!("{}\\Python\\Python3{}\\Scripts", appdata, minor),
+            format!("{}\\Programs\\Python\\Python3{}\\Scripts", localappdata, minor),
+        ];
+        for p in candidates {
+            if std::path::Path::new(&p).exists() {
+                paths.push(p);
+            }
+        }
+    }
+    paths.join(";")
+}
+
 // AppImage launchers and some desktop environments strip ~/.local/bin from PATH.
 // These helpers prepend the common user-install locations so `mcpanel` (installed
 // via pip --user or pipx) is always found regardless of how the app was launched.
 fn mcpanel_cmd() -> std::process::Command {
     let mut cmd = std::process::Command::new("mcpanel");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
-    let path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("{}:{}", extra, path));
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+        let path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}:{}", extra, path));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let extra = windows_python_scripts_paths();
+        if !extra.is_empty() {
+            let path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{};{}", extra, path));
+        }
+    }
     // AppImage bundles its own Python and exports PYTHONHOME/PYTHONPATH pointing
     // inside the AppImage. Those break the system-installed mcpanel CLI because
     // Python can't find its standard library (encodings, etc.). Unset them so the
     // system Python is used when mcpanel is invoked.
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
-    // Prevent a console window from flashing on Windows for each subprocess.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
     cmd
 }
 
 fn mcpanel_async_cmd() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("mcpanel");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
-    let path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("{}:{}", extra, path));
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+        let path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}:{}", extra, path));
+    }
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let extra = windows_python_scripts_paths();
+        if !extra.is_empty() {
+            let path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{};{}", extra, path));
+        }
+    }
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     cmd
 }
 
@@ -1141,6 +1201,37 @@ pub async fn install_cli() -> Result<String, String> {
         match cmd.output().await {
             Ok(o) if o.status.success() => {
                 log_to_file("install_cli: mcpanel-cli installed from GitHub zip");
+
+                // On Windows, pip --user installs to a Scripts dir that isn't on PATH
+                // by default. Ask the same Python interpreter where it put the scripts,
+                // then persist that directory into the user's PATH registry entry.
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    // The pip candidate may be "pip" itself; find the associated Python.
+                    let py = if prog.starts_with("pip") { "python" } else { prog };
+                    if let Ok(out) = tokio::process::Command::new(py)
+                        .args(["-c", "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"])
+                        .creation_flags(0x08000000)
+                        .output().await
+                    {
+                        let scripts = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !scripts.is_empty() {
+                            let ps_cmd = format!(
+                                "$s='{s}'; $p=[Environment]::GetEnvironmentVariable('PATH','User'); \
+                                 if($p -notlike ('*'+$s+'*')){{[Environment]::SetEnvironmentVariable('PATH',$p.TrimEnd(';')+';'+$s,'User')}}",
+                                s = scripts
+                            );
+                            let _ = tokio::process::Command::new("powershell")
+                                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+                                       "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
+                                .creation_flags(0x08000000)
+                                .output().await;
+                            log_to_file(&format!("install_cli: added {} to user PATH", scripts));
+                        }
+                    }
+                }
+
                 return Ok("mcpanel-cli installed successfully".into());
             }
             Ok(o) => {
@@ -1968,6 +2059,16 @@ pub fn get_velocity_secret(id: String) -> Value {
 
 #[tauri::command]
 pub fn get_system_stats() -> Value {
+    #[cfg(windows)]
+    return get_system_stats_windows();
+    #[cfg(target_os = "macos")]
+    return get_system_stats_macos();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return get_system_stats_linux();
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn get_system_stats_linux() -> Value {
     let mut total_ram: u64 = 0;
     let mut avail_ram: u64 = 0;
 
@@ -1999,6 +2100,162 @@ pub fn get_system_stats() -> Value {
 
     let cpu_pct = ((load1m / cpu_count as f64) * 1000.0).round() / 10.0;
     let cpu_pct = cpu_pct.min(100.0);
+    let used_ram = total_ram.saturating_sub(avail_ram);
+
+    serde_json::json!({
+        "totalRam": total_ram,
+        "availRam": avail_ram,
+        "usedRam": used_ram,
+        "cpuPct": cpu_pct,
+        "loadAvg": load1m,
+    })
+}
+
+// Cache previous CPU times between polls so we can compute a delta without sleeping.
+// First call returns 0% (no previous sample); subsequent calls are accurate.
+#[cfg(windows)]
+fn cpu_prev_mutex() -> &'static std::sync::Mutex<Option<(u64, u64)>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<Option<(u64, u64)>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(windows)]
+fn get_system_stats_windows() -> Value {
+    use std::mem;
+
+    // ── RAM ──────────────────────────────────────────────────────────────────
+    #[repr(C)]
+    struct MEMORYSTATUSEX {
+        dwLength: u32,
+        dwMemoryLoad: u32,
+        ullTotalPhys: u64,
+        ullAvailPhys: u64,
+        ullTotalPageFile: u64,
+        ullAvailPageFile: u64,
+        ullTotalVirtual: u64,
+        ullAvailVirtual: u64,
+        ullAvailExtendedVirtual: u64,
+    }
+
+    extern "system" {
+        fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX) -> i32;
+    }
+
+    let (total_ram, avail_ram) = unsafe {
+        let mut s: MEMORYSTATUSEX = mem::zeroed();
+        s.dwLength = mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if GlobalMemoryStatusEx(&mut s) != 0 {
+            (s.ullTotalPhys, s.ullAvailPhys)
+        } else {
+            (0u64, 0u64)
+        }
+    };
+
+    // ── CPU (delta between successive calls) ──────────────────────────────────
+    #[repr(C)]
+    struct FILETIME { lo: u32, hi: u32 }
+
+    extern "system" {
+        fn GetSystemTimes(idle: *mut FILETIME, kernel: *mut FILETIME, user: *mut FILETIME) -> i32;
+    }
+
+    let ft64 = |ft: &FILETIME| -> u64 { ((ft.hi as u64) << 32) | ft.lo as u64 };
+
+    let cpu_pct: f64 = unsafe {
+        let mut idle: FILETIME = mem::zeroed();
+        let mut kern: FILETIME = mem::zeroed();
+        let mut user: FILETIME = mem::zeroed();
+
+        if GetSystemTimes(&mut idle, &mut kern, &mut user) != 0 {
+            let idle_now  = ft64(&idle);
+            // Kernel time includes idle time on Windows.
+            let total_now = ft64(&kern) + ft64(&user);
+
+            let mut prev = cpu_prev_mutex().lock().unwrap();
+            let pct = if let Some((prev_idle, prev_total)) = *prev {
+                let d_idle  = idle_now.saturating_sub(prev_idle);
+                let d_total = total_now.saturating_sub(prev_total);
+                if d_total > 0 {
+                    let busy = d_total.saturating_sub(d_idle);
+                    ((busy as f64 / d_total as f64) * 100.0).min(100.0).round()
+                } else {
+                    0.0
+                }
+            } else {
+                0.0 // first sample — no previous reading yet
+            };
+            *prev = Some((idle_now, total_now));
+            pct
+        } else {
+            0.0
+        }
+    };
+
+    let used_ram = total_ram.saturating_sub(avail_ram);
+    serde_json::json!({
+        "totalRam": total_ram,
+        "availRam": avail_ram,
+        "usedRam": used_ram,
+        "cpuPct": cpu_pct,
+        "loadAvg": cpu_pct,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn get_system_stats_macos() -> Value {
+    // ── Total RAM ─────────────────────────────────────────────────────────────
+    let total_ram: u64 = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0);
+
+    // ── Available RAM (free + inactive + speculative pages × page size) ───────
+    let avail_ram: u64 = (|| -> Option<u64> {
+        let page_size: u64 = std::process::Command::new("sysctl")
+            .args(["-n", "hw.pagesize"])
+            .output().ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            .unwrap_or(4096);
+
+        let vm = std::process::Command::new("vm_stat").output().ok()?;
+        let text = String::from_utf8_lossy(&vm.stdout);
+        let mut pages_free: u64 = 0;
+        let mut pages_inactive: u64 = 0;
+        let mut pages_speculative: u64 = 0;
+        for line in text.lines() {
+            let val = || -> Option<u64> {
+                line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()
+            };
+            if line.starts_with("Pages free:")          { pages_free         = val().unwrap_or(0); }
+            if line.starts_with("Pages inactive:")       { pages_inactive      = val().unwrap_or(0); }
+            if line.starts_with("Pages speculative:")    { pages_speculative   = val().unwrap_or(0); }
+        }
+        Some((pages_free + pages_inactive + pages_speculative) * page_size)
+    })().unwrap_or(0);
+
+    // ── CPU (load average ÷ logical CPU count) ────────────────────────────────
+    let load1m: f64 = std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            // Output: "{ 0.42 0.38 0.31 }"
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.split_whitespace().nth(1).and_then(|n| n.parse().ok())
+        })
+        .unwrap_or(0.0);
+
+    let cpu_count: f64 = std::process::Command::new("sysctl")
+        .args(["-n", "hw.logicalcpu"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(1.0_f64.into());
+
+    let cpu_pct = ((load1m / cpu_count) * 100.0).min(100.0).round();
     let used_ram = total_ram.saturating_sub(avail_ram);
 
     serde_json::json!({

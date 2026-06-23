@@ -42,6 +42,11 @@
         "postInstallScript": "../scripts/rpm-postinst"
       }
     },
-    "shortDescription": "Minecraft Server Panel"
+    "shortDescription": "Minecraft Server Panel",
+    "windows": {
+      "wix": {
+        "fragmentPaths": ["../scripts/wix-cli-install.wxs"]
+      }
+    }
   }
 }

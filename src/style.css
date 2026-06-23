@@ -184,6 +184,17 @@ body {
 .tb-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .tb-btn.close:hover { background: var(--red); color: #fff; }
 
+/* ── Resize handles (decorations:false) ──────────────── */
+.wnd-resize { position: fixed; z-index: 99999; }
+.wnd-resize.n  { top: 0; left: 6px; right: 6px; height: 4px; cursor: n-resize; }
+.wnd-resize.s  { bottom: 0; left: 6px; right: 6px; height: 4px; cursor: s-resize; }
+.wnd-resize.e  { right: 0; top: 6px; bottom: 6px; width: 4px; cursor: e-resize; }
+.wnd-resize.w  { left: 0; top: 6px; bottom: 6px; width: 4px; cursor: w-resize; }
+.wnd-resize.ne { top: 0; right: 0; width: 8px; height: 8px; cursor: ne-resize; }
+.wnd-resize.nw { top: 0; left: 0; width: 8px; height: 8px; cursor: nw-resize; }
+.wnd-resize.se { bottom: 0; right: 0; width: 8px; height: 8px; cursor: se-resize; }
+.wnd-resize.sw { bottom: 0; left: 0; width: 8px; height: 8px; cursor: sw-resize; }
+
 /* ── App Layout ───────────────────────────────────── */
 .app {
   display: flex;

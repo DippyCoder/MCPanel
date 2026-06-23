@@ -11,7 +11,7 @@
 
 <!-- Custom Titlebar -->
 <div class="titlebar">
-  <div class="titlebar-drag" data-tauri-drag-region>
+  <div class="titlebar-drag" data-tauri-drag-region="deep">
     <div class="titlebar-logo">
       <img src="assets/icon.png" width="18" height="18" style="object-fit:contain;border-radius:3px">
       <span>MCPanel</span>
@@ -1478,6 +1478,16 @@
     </div>
   </div>
 </div>
+
+<!-- Window resize handles (decorations:false) -->
+<div class="wnd-resize nw" onmousedown="window.mcpanel.startResizeDragging('NorthWest')"></div>
+<div class="wnd-resize n"  onmousedown="window.mcpanel.startResizeDragging('North')"></div>
+<div class="wnd-resize ne" onmousedown="window.mcpanel.startResizeDragging('NorthEast')"></div>
+<div class="wnd-resize w"  onmousedown="window.mcpanel.startResizeDragging('West')"></div>
+<div class="wnd-resize e"  onmousedown="window.mcpanel.startResizeDragging('East')"></div>
+<div class="wnd-resize sw" onmousedown="window.mcpanel.startResizeDragging('SouthWest')"></div>
+<div class="wnd-resize s"  onmousedown="window.mcpanel.startResizeDragging('South')"></div>
+<div class="wnd-resize se" onmousedown="window.mcpanel.startResizeDragging('SouthEast')"></div>
 
 <link rel="stylesheet" href="lib/xterm.css">
 <script src="lib/xterm.js"></script>

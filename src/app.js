@@ -93,11 +93,20 @@ async function init() {
   const _win = window.__TAURI__?.window?.getCurrentWindow?.();
   if (_win?.listen) {
     _win.listen('tauri://drag-drop', async (event) => {
+      const paths = event.payload?.paths || [];
+      if (!paths.length) return;
+
+      const profilePane = document.getElementById('pane-profile-files');
+      if (currentProfileId && profilePane && !profilePane.classList.contains('hidden')) {
+        document.getElementById('profile-file-drop-zone')?.classList.remove('drop-active');
+        document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
+        await uploadProfileFilesFromPaths(paths, profileNavPaths.join('/'));
+        return;
+      }
+
       if (!currentServerId) return;
       const pane = document.getElementById('pane-files');
       if (!pane || pane.classList.contains('hidden')) return;
-      const paths = event.payload?.paths || [];
-      if (!paths.length) return;
       document.getElementById('file-drop-zone')?.classList.remove('drop-active');
       document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
       await uploadFilesFromPaths(paths, fileNavPaths.join('/'));
