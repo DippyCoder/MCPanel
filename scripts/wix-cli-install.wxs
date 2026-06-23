@@ -1,29 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  WiX fragment: install mcpanel-cli via pip after MSI installation.
-  Mirrors what scripts/rpm-postinst and scripts/deb-postinst do on Linux.
-  Return="ignore" means a missing/broken Python silently skips the CLI install;
-  the user can still click "Install CLI" inside the app afterwards.
+  WiX fragment: install mcpanel-cli via pip and add its Scripts directory to the
+  MACHINE PATH (HKLM) during MSI installation.  The MSI always runs elevated, so
+  writing to HKLM is permitted.  Deferred + Impersonate="yes" means the CA runs
+  as the actual installing user (correct %APPDATA% for pip --user) while still
+  holding the admin token needed for HKLM writes.
+
+  WiX property-format escaping used inside ExeCommand (single-quoted XML attr):
+    {  ->  [\{]      }  ->  [\}]
+    [  ->  [\[]      ]  ->  [\]]
+    '  ->  &apos;    &  ->  &amp;
+    "  unchanged (safe in single-quoted XML attr)
+
+  chr() is used for the sysconfig string args to avoid quote nesting inside a
+  PowerShell single-quoted -c string inside a double-quoted -Command string:
+    chr(115)+chr(99)+chr(114)+chr(105)+chr(112)+chr(116)+chr(115) = "scripts"
+    chr(110)+chr(116)+chr(95)+chr(117)+chr(115)+chr(101)+chr(114) = "nt_user"
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
-    <!--
-      Run PowerShell to pip-install the CLI and add the Python Scripts folder to
-      the user's PATH.  WiX property-format escaping used in ExeCommand:
-        {  ->  [\{]      }  ->  [\}]
-        [  ->  [\[]      ]  ->  [\]]
-        '  ->  &apos;    &  ->  &amp;
-    -->
     <CustomAction
       Id='InstallMCPanelCLI'
       Directory='INSTALLDIR'
       Execute='deferred'
+      Impersonate='yes'
       Return='ignore'
-      ExeCommand='powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "foreach ($py in @(&apos;py&apos;,&apos;python&apos;,&apos;python3&apos;)) [\{] try [\{] &amp; $py -m pip install --user &apos;https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip&apos; 2>&amp;1 | Out-Null [\}] catch [\{][\}]; if ($LASTEXITCODE -eq 0) [\{] $s = &amp; $py -c &apos;import sysconfig;print(sysconfig.get_path(chr(115)+chr(99)+chr(114)+chr(105)+chr(112)+chr(116)+chr(115),chr(110)+chr(116)+chr(95)+chr(117)+chr(115)+chr(101)+chr(114)))&apos; 2>&amp;1; $p = [\[]Environment[\]]::GetEnvironmentVariable(&apos;PATH&apos;,&apos;User&apos;); if ($s -and -not $p.Contains($s)) [\{] [\[]Environment[\]]::SetEnvironmentVariable(&apos;PATH&apos;,$p.TrimEnd(&apos;;&apos;)+&apos;;&apos;+$s,&apos;User&apos;) [\}]; break [\}] [\}]"'
+      ExeCommand='powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "foreach ($py in @(&apos;py&apos;,&apos;python&apos;,&apos;python3&apos;)) [\{] try [\{] &amp; $py -m pip install --user &apos;https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip&apos; 2>&amp;1 | Out-Null [\}] catch [\{][\}]; if ($LASTEXITCODE -eq 0) [\{] $s = (&amp; $py -c &apos;import sysconfig;print(sysconfig.get_path(chr(115)+chr(99)+chr(114)+chr(105)+chr(112)+chr(116)+chr(115),chr(110)+chr(116)+chr(95)+chr(117)+chr(115)+chr(101)+chr(114)))&apos; 2>$null).Trim(); if ($s) [\{] $p = [\[]Environment[\]]::GetEnvironmentVariable(&apos;PATH&apos;,&apos;Machine&apos;); if ($p -notlike &apos;*&apos;+$s+&apos;*&apos;) [\{] [\[]Environment[\]]::SetEnvironmentVariable(&apos;PATH&apos;,$p.TrimEnd(&apos;;&apos;)+&apos;;&apos;+$s,&apos;Machine&apos;) [\}] [\}]; break [\}] [\}]"'
     />
     <InstallExecuteSequence>
-      <!-- Only on fresh install, not upgrade or uninstall -->
-      <Custom Action='InstallMCPanelCLI' Before='InstallFinalize'>NOT Installed AND NOT REMOVE</Custom>
+      <!-- Run on install and upgrade, not on uninstall -->
+      <Custom Action='InstallMCPanelCLI' Before='InstallFinalize'>NOT REMOVE</Custom>
     </InstallExecuteSequence>
   </Fragment>
 </Wix>

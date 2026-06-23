@@ -1217,9 +1217,17 @@ pub async fn install_cli() -> Result<String, String> {
                     {
                         let scripts = String::from_utf8_lossy(&out.stdout).trim().to_string();
                         if !scripts.is_empty() {
+                            // Try machine PATH first (requires admin); fall back to user PATH.
                             let ps_cmd = format!(
-                                "$s='{s}'; $p=[Environment]::GetEnvironmentVariable('PATH','User'); \
-                                 if($p -notlike ('*'+$s+'*')){{[Environment]::SetEnvironmentVariable('PATH',$p.TrimEnd(';')+';'+$s,'User')}}",
+                                "$s='{s}'; \
+                                 $m=[Environment]::GetEnvironmentVariable('PATH','Machine'); \
+                                 $u=[Environment]::GetEnvironmentVariable('PATH','User'); \
+                                 if($m -notlike ('*'+$s+'*')){{ \
+                                   try{{[Environment]::SetEnvironmentVariable('PATH',$m.TrimEnd(';')+';'+$s,'Machine')}}catch{{}} \
+                                 }}; \
+                                 if((([Environment]::GetEnvironmentVariable('PATH','Machine')) -notlike ('*'+$s+'*')) -and ($u -notlike ('*'+$s+'*'))){{ \
+                                   [Environment]::SetEnvironmentVariable('PATH',$u.TrimEnd(';')+';'+$s,'User') \
+                                 }}",
                                 s = scripts
                             );
                             let _ = tokio::process::Command::new("powershell")
@@ -1227,7 +1235,7 @@ pub async fn install_cli() -> Result<String, String> {
                                        "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
                                 .creation_flags(0x08000000)
                                 .output().await;
-                            log_to_file(&format!("install_cli: added {} to user PATH", scripts));
+                            log_to_file(&format!("install_cli: added {} to PATH", scripts));
                         }
                     }
                 }
