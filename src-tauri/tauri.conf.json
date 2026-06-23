@@ -48,7 +48,7 @@
     },
     "windows": {
       "wix": {
-        "fragmentPaths": ["../scripts/wix-cli-install.wxs"]
+        "fragmentPaths": ["wix-cli-install.wxs"]
       }
     }
   }
