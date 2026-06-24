@@ -405,12 +405,11 @@
         }, 600);
       } else {
         window._cliOk = false;
-        const msg = (result && result.error) || 'mcpanel CLI not found';
-        showCliMissingBanner(msg);
+        showCliMissingModal();
       }
     }).catch(() => {
       window._cliOk = false;
-      showCliMissingBanner('mcpanel CLI not found. Click "Install CLI" to install it automatically.');
+      showCliMissingModal();
     });
   });
 
@@ -429,6 +428,23 @@
       window.addEventListener('DOMContentLoaded', tryShow);
     }
   }
+
+  function showCliMissingModal() {
+    function tryShow() {
+      const modal = document.getElementById('modal-cli-missing');
+      if (modal) modal.classList.remove('hidden');
+    }
+    if (document.readyState !== 'loading') tryShow();
+    else window.addEventListener('DOMContentLoaded', tryShow);
+  }
+
+  function getCliDownloadUrl() {
+    const p = (navigator.platform || '').toLowerCase();
+    if (p.includes('linux')) return 'https://mcpanel.dippycoder.xyz/download#cli-linux-bash';
+    if (p.includes('win')) return 'https://mcpanel.dippycoder.xyz/download#cli-windows';
+    return 'https://mcpanel.dippycoder.xyz/download#cli-macos';
+  }
+  window._cliDownloadUrl = getCliDownloadUrl;
 
   // ─── In-app CLI installer (called by "Install CLI" button) ───────────────────
   window._installCli = async function () {
