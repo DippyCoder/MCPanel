@@ -68,8 +68,28 @@ sudo rpm -i mcpanel_*.rpm
 
 ---
 
-### Install a pre-built package (Windows + MacOS)
-> **Note:** As long as `mcpanel-cli` isn't available for `Windows` and `MacOS`, v2 is not available. Use v1 if using Windows or MacOS!
+### Install a pre-built package (Windows)
+
+Download the latest release from the [releases page](https://github.com/DippyCoder/MCPanel/releases):
+
+| Format | Notes |
+|--------|-------|
+| `.msi` | Recommended — installs silently and sets up `mcpanel-cli` automatically |
+| `.exe` | NSIS installer — requires Python to be installed first |
+
+> **Prerequisite:** [Python 3](https://www.python.org/downloads/) must be installed before running MCPanel.
+> The `.msi` installer auto-installs `mcpanel-cli` via pip and adds it to your PATH during setup.
+> If Python wasn't installed at install time, open MCPanel and click **Install CLI** on the banner that appears.
+
+#### MSI (recommended)
+1. Download `MCPanel_x.x.x_x64_en-US.msi`
+2. Double-click to install — accepts UAC prompt, installs the CLI automatically
+3. Launch MCPanel from the Start Menu
+
+#### Manual CLI install (if needed)
+```powershell
+py -m pip install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip
+```
 
 ---
 
@@ -132,10 +152,16 @@ cargo tauri build --bundles appimage,deb,rpm
 
 ## 📂 Data directory
 
-All data is stored in **`~/.config/mcpanel/`** — the same directory used by MCPanel v1 (Electron) and `mcpanel-cli`:
+All data is stored in a platform-specific directory — the same location used by MCPanel v1 (Electron) and `mcpanel-cli`:
+
+| Platform | Path |
+|----------|------|
+| Linux | `~/.config/mcpanel/` |
+| Windows | `%APPDATA%\mcpanel\` |
+| macOS | `~/Library/Application Support/mcpanel/` |
 
 ```
-~/.config/mcpanel/
+<data dir>/
 ├── config.json       ← server list, active theme
 ├── servers/<id>/     ← each server's working directory and JAR
 ├── profiles/<id>/    ← profile presets
@@ -223,4 +249,4 @@ Community themes and authoring docs: [`themes` branch](https://github.com/DippyC
 | Frontend | Vanilla HTML / CSS / JS |
 | Fonts | Poppins + JetBrains Mono |
 | Build | `cargo tauri build` |
-| CI/CD | GitHub Actions → AppImage, .deb, .rpm on release |
+| CI/CD | GitHub Actions → AppImage, .deb, .rpm, .msi, .exe on release |

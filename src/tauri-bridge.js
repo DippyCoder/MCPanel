@@ -5,13 +5,29 @@
    ═══════════════════════════════════════════════════════ */
 
 (function () {
+  // backdrop-filter: blur() crashes WebKit2GTK on Linux when compositing is
+  // disabled (WEBKIT_DISABLE_COMPOSITING_MODE=1, needed to avoid Wayland EPROTO).
+  // Add a class so CSS can skip it on Linux.
+  if (/Linux/.test(navigator.platform)) {
+    document.documentElement.classList.add('linux');
+  }
+
   // Tauri v2 with withGlobalTauri:true exposes window.__TAURI_INTERNALS__
   const _invoke = (...a) => window.__TAURI_INTERNALS__.invoke(...a);
   // In Tauri v2, listen is on window.__TAURI__.event, not __TAURI_INTERNALS__
   const _listen = (...a) => window.__TAURI__.event.listen(...a);
 
+  // Resolves true/false after the startup CLI check completes.
+  // app.js waits on this before calling init() so no CLI subprocess is ever
+  // spawned until we confirm the real CLI tool is present (not the GUI binary).
+  let _cliReadyResolve;
+  window._cliReady = new Promise(resolve => { _cliReadyResolve = resolve; });
+
   // ─── CLI helper ─────────────────────────────────────────────────────────────
   async function cli(args) {
+    // Block until check is done AND it passed. This prevents run_cli from
+    // spawning subprocesses before we know mcpanel resolves to the CLI tool.
+    if (window._cliOk !== true) throw new Error('MCPanel-CLI is not available');
     const raw = await _invoke('run_cli', { args });
     return JSON.parse(raw);
   }
@@ -52,6 +68,11 @@
   }
   function close() {
     _invoke('quit_app');
+  }
+  function startResizeDragging(direction) {
+    const w = _currentWindow();
+    if (w) w.startResizeDragging(direction);
+    else _invoke('plugin:window|start_resize_dragging', { value: direction });
   }
 
   // ─── Public API ──────────────────────────────────────────────────────────────
@@ -241,6 +262,25 @@
     readServerFile: (id, relPath) =>
       _invoke('read_server_file', { id, relPath }),
 
+    updateProfile: (id, data) =>
+      _invoke('update_profile', { id, ...data }),
+    getProfileFileTree: (id) =>
+      _invoke('get_profile_file_tree', { id }),
+    readProfileFile: (id, relPath) =>
+      _invoke('read_profile_file', { id, relPath }),
+    writeProfileFile: (id, relPath, data) =>
+      _invoke('write_profile_file', { id, relPath, data }),
+    deleteProfileFile: (id, relPath) =>
+      _invoke('delete_profile_file', { id, relPath }),
+    createProfileDir: (id, relPath) =>
+      _invoke('create_profile_dir', { id, relPath }),
+    createProfileFile: (id, relPath) =>
+      _invoke('create_profile_file', { id, relPath }),
+    renameProfileFile: (id, oldPath, newPath) =>
+      _invoke('rename_profile_file', { id, oldPath, newPath }),
+    uploadFilesToProfile: (id, srcPaths, destDir) =>
+      _invoke('upload_files_to_profile', { id, srcPaths, destDir }),
+
     createProfileFromServer: async (id, profileData, selectedPaths) => {
       const args = [
         '-id', id,
@@ -259,6 +299,17 @@
       const raw = await _invoke('duplicate_server', { id, newName });
       return JSON.parse(raw);
     },
+
+    // Velocity proxy link (handled natively in Rust — bypasses CLI)
+    proxyInfo: (velocityId) =>
+      _invoke('proxy_info', { velocityId }),
+
+    linkToProxy: (paperId, velocityId, serverName, priority, customIp) =>
+      _invoke('link_to_proxy', {
+        paperId, velocityId, serverName,
+        priority,
+        customIp: customIp || null,
+      }),
 
     // Velocity
     getVelocitySecret: (id) => _invoke('get_velocity_secret', { id }),
@@ -279,9 +330,8 @@
     checkUpdate: async () => {
       try {
         const current = await _invoke('get_app_version');
-        const res = await fetch('https://api.github.com/repos/dippycoder/mcpanel/releases/latest');
-        if (!res.ok) return { current, latest: null, hasUpdate: false };
-        const data = await res.json();
+        const data = await _invoke('check_app_update');
+        if (!data) return { current, latest: null, hasUpdate: false };
         const latest = data.tag_name ? data.tag_name.replace(/^v/, '') : null;
         const hasUpdate = !!(current && latest && semverGt(latest, current));
         return { current, latest, hasUpdate, url: data.html_url || '' };
@@ -294,9 +344,8 @@
       try {
         const cliInfo = await _invoke('check_cli');
         const current = (cliInfo && cliInfo.ok && cliInfo.version) ? cliInfo.version : null;
-        const res = await fetch('https://api.github.com/repos/dippycoder/mcpanel-cli/releases/latest');
-        if (!res.ok) return { current, latest: null, hasUpdate: false };
-        const data = await res.json();
+        const data = await _invoke('check_cli_update');
+        if (!data) return { current, latest: null, hasUpdate: false };
         const latest = data.tag_name ? data.tag_name.replace(/^v/, '') : null;
         const hasUpdate = !!(current && latest && semverGt(latest, current));
         const url = data.html_url || 'https://github.com/dippycoder/mcpanel-cli/releases/latest';
@@ -317,6 +366,7 @@
     },
 
     // Themes — all handled natively in Rust, no CLI involvement
+    ensureBuiltinThemes: () => _invoke('ensure_builtin_themes'),
     getThemes: () => _invoke('get_themes'),
     getThemeCss: (id) => _invoke('get_theme_css', { id }),
     deleteTheme: (id) => _invoke('delete_theme', { id }),
@@ -347,6 +397,7 @@
     minimize,
     maximize,
     close,
+    startResizeDragging,
   };
 
   // ─── Semver helper (used by checkCliUpdate) ──────────────────────────────────
@@ -364,18 +415,20 @@
     _invoke('check_cli').then(result => {
       if (result && result.ok) {
         window._cliOk = true;
+        _cliReadyResolve(true);
         setTimeout(() => {
           if (typeof window.toast === 'function')
             window.toast(`MCPanel-CLI v${result.version || '?'} ready`, 'success');
         }, 600);
       } else {
         window._cliOk = false;
-        const msg = (result && result.error) || 'mcpanel CLI not found';
-        showCliMissingBanner(msg);
+        _cliReadyResolve(false);
+        showCliMissingModal();
       }
     }).catch(() => {
       window._cliOk = false;
-      showCliMissingBanner('mcpanel CLI not found. Click "Install CLI" to install it automatically.');
+      _cliReadyResolve(false);
+      showCliMissingModal();
     });
   });
 
@@ -394,6 +447,23 @@
       window.addEventListener('DOMContentLoaded', tryShow);
     }
   }
+
+  function showCliMissingModal() {
+    function tryShow() {
+      const modal = document.getElementById('modal-cli-missing');
+      if (modal) modal.classList.remove('hidden');
+    }
+    if (document.readyState !== 'loading') tryShow();
+    else window.addEventListener('DOMContentLoaded', tryShow);
+  }
+
+  function getCliDownloadUrl() {
+    const p = (navigator.platform || '').toLowerCase();
+    if (p.includes('linux')) return 'https://mcpanel.dippycoder.xyz/download#cli-linux-bash';
+    if (p.includes('win')) return 'https://mcpanel.dippycoder.xyz/download#cli-windows';
+    return 'https://mcpanel.dippycoder.xyz/download#cli-macos';
+  }
+  window._cliDownloadUrl = getCliDownloadUrl;
 
   // ─── In-app CLI installer (called by "Install CLI" button) ───────────────────
   window._installCli = async function () {

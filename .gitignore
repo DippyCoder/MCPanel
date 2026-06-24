@@ -4,6 +4,5 @@ dist/
 Thumbs.db
 *.log
 package-lock.json
-
-# Tauri / Rust
+PRIVACY.md
 src-tauri/target/

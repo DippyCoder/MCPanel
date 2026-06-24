@@ -21,6 +21,26 @@ pub fn mcpanel_home() -> String {
     if let Ok(v) = std::env::var("MCPANEL_HOME") {
         return v;
     }
+    // Must match the path returned by each platform's CLI (mcpanel/paths.py).
+    #[cfg(windows)]
+    {
+        // Matches Electron's app.getPath('userData') on Windows: %APPDATA%\mcpanel
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
+            format!(
+                "{}/AppData/Roaming",
+                std::env::var("USERPROFILE").unwrap_or_else(|_| "C:/Users/Default".into())
+            )
+        });
+        return format!("{}/mcpanel", appdata);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Matches Electron's app.getPath('userData') on macOS:
+        // ~/Library/Application Support/mcpanel
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        return format!("{}/Library/Application Support/mcpanel", home);
+    }
+    // Linux: $XDG_CONFIG_HOME/mcpanel or ~/.config/mcpanel
     let base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
         format!(
             "{}/.config",
@@ -63,15 +83,168 @@ fn log_to_file(line: &str) {
 
 // ─── CLI runner ───────────────────────────────────────────────────────────────
 
+// On Windows, pip --user installs to %APPDATA%\Python\Python3XX\Scripts\ which is
+// not on PATH by default. Enumerate the common locations so mcpanel is always
+// found regardless of whether the user updated their PATH.
+#[cfg(windows)]
+fn windows_python_scripts_paths() -> String {
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let mut paths = Vec::new();
+    // Check Python 3.8–3.14 (newest first so the latest takes precedence)
+    for minor in (8u32..=14).rev() {
+        let candidates = [
+            format!("{}\\Python\\Python3{}\\Scripts", appdata, minor),
+            format!("{}\\Programs\\Python\\Python3{}\\Scripts", localappdata, minor),
+        ];
+        for p in candidates {
+            if std::path::Path::new(&p).exists() {
+                paths.push(p);
+            }
+        }
+    }
+    paths.join(";")
+}
+
+// Locate the mcpanel-cli executable by checking the filesystem locations where
+// `pip --user` / `pipx` install it on each OS — WITHOUT executing anything.
+//
+// This is the fix for the "1000 windows" fork bomb: on Linux/macOS this GUI
+// binary is itself named `mcpanel`, so spawning a bare `mcpanel` from PATH can
+// launch another copy of the GUI instead of the Python CLI. Each new GUI re-runs
+// the CLI check on startup, which spawns another GUI… → unbounded recursion.
+//
+// By resolving an ABSOLUTE path to the Python console-script — and explicitly
+// skipping our own executable (current_exe) — it becomes impossible to ever
+// accidentally launch the GUI as if it were the CLI. User-install locations are
+// checked first so a pip/pipx install always wins over anything in /usr/bin.
+fn find_cli_path() -> Option<std::path::PathBuf> {
+    let exe = if cfg!(windows) { "mcpanel.exe" } else { "mcpanel" };
+    let self_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
+        // pip --user installs to %APPDATA%\Python\Python3XX\Scripts (newest first).
+        for minor in (8u32..=14).rev() {
+            if !appdata.is_empty() {
+                candidates.push(format!("{}\\Python\\Python3{}\\Scripts\\{}", appdata, minor, exe).into());
+            }
+            if !localappdata.is_empty() {
+                candidates.push(format!("{}\\Programs\\Python\\Python3{}\\Scripts\\{}", localappdata, minor, exe).into());
+            }
+        }
+        if !userprofile.is_empty() {
+            candidates.push(format!("{}\\.local\\bin\\{}", userprofile, exe).into()); // pipx
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            candidates.push(format!("{}/.local/bin/{}", home, exe).into());      // pip --user (Linux)
+            candidates.push(format!("{}/.local/pipx/bin/{}", home, exe).into()); // pipx
+            // pip --user on macOS lands in ~/Library/Python/3.x/bin.
+            #[cfg(target_os = "macos")]
+            for minor in (8u32..=14).rev() {
+                candidates.push(format!("{}/Library/Python/3.{}/bin/{}", home, minor, exe).into());
+            }
+        }
+        candidates.push(format!("/usr/local/bin/{}", exe).into());
+        #[cfg(target_os = "macos")]
+        candidates.push(format!("/opt/homebrew/bin/{}", exe).into()); // Homebrew (Apple Silicon)
+        candidates.push(format!("/usr/bin/{}", exe).into());
+    }
+
+    for cand in candidates {
+        if !cand.is_file() {
+            continue;
+        }
+        // Never return our own GUI binary — resolving symlinks first so a
+        // `mcpanel` symlink pointing at the GUI is also caught.
+        if let Some(ref me) = self_exe {
+            if std::fs::canonicalize(&cand).ok().as_ref() == Some(me) {
+                continue;
+            }
+        }
+        // CRITICAL: a system .deb/.rpm install puts the *GUI* binary in /usr/bin
+        // (and other shared dirs), so a matching path is NOT proof we found the
+        // CLI. On Unix, positively confirm the candidate is the Python console
+        // script (text file with a `#!…python` shebang) and not a compiled ELF/
+        // Mach-O binary. Spawning a GUI here is exactly the fork bomb, so any
+        // non-CLI candidate must be rejected.
+        #[cfg(not(windows))]
+        if !looks_like_python_cli(&cand) {
+            continue;
+        }
+        return Some(cand);
+    }
+    None
+}
+
+// True only if `path` is a Python console-script: a small text file whose first
+// line is a `#!` shebang invoking python. Compiled GUI binaries (ELF on Linux,
+// Mach-O on macOS) are rejected, which is what stops us ever launching the GUI
+// as if it were the CLI. Windows pip launchers are `.exe` files in pip-only
+// Scripts dirs the GUI never installs to, so this check is Unix-only.
+#[cfg(not(windows))]
+fn looks_like_python_cli(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = [0u8; 128];
+    let n = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    let head = &buf[..n];
+    if !head.starts_with(b"#!") {
+        return false; // ELF/Mach-O and anything non-script falls out here
+    }
+    let first_line = head.split(|&b| b == b'\n').next().unwrap_or(head);
+    String::from_utf8_lossy(first_line).to_lowercase().contains("python")
+}
+
+// Program to invoke for the CLI: the resolved absolute path when found, else a
+// bare "mcpanel" fallback (only reached when callers have already confirmed the
+// CLI exists, so this never reintroduces the fork bomb in practice).
+fn cli_program() -> std::ffi::OsString {
+    find_cli_path()
+        .map(|p| p.into_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("mcpanel"))
+}
+
 // AppImage launchers and some desktop environments strip ~/.local/bin from PATH.
 // These helpers prepend the common user-install locations so `mcpanel` (installed
 // via pip --user or pipx) is always found regardless of how the app was launched.
 fn mcpanel_cmd() -> std::process::Command {
-    let mut cmd = std::process::Command::new("mcpanel");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
-    let path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("{}:{}", extra, path));
+    let mut cmd = std::process::Command::new(cli_program());
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+        let path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}:{}", extra, path));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let extra = windows_python_scripts_paths();
+        if !extra.is_empty() {
+            let path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{};{}", extra, path));
+        }
+    }
     // AppImage bundles its own Python and exports PYTHONHOME/PYTHONPATH pointing
     // inside the AppImage. Those break the system-installed mcpanel CLI because
     // Python can't find its standard library (encodings, etc.). Unset them so the
@@ -82,45 +255,74 @@ fn mcpanel_cmd() -> std::process::Command {
 }
 
 fn mcpanel_async_cmd() -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("mcpanel");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
-    let path = std::env::var("PATH").unwrap_or_default();
-    cmd.env("PATH", format!("{}:{}", extra, path));
+    let mut cmd = tokio::process::Command::new(cli_program());
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let extra = format!("{}/.local/bin:{}/.local/pipx/bin:/usr/local/bin", home, home);
+        let path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}:{}", extra, path));
+    }
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let extra = windows_python_scripts_paths();
+        if !extra.is_empty() {
+            let path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{};{}", extra, path));
+        }
+    }
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
     cmd
 }
 
 #[tauri::command]
-pub fn check_cli() -> Value {
-    match mcpanel_cmd()
+pub async fn check_cli() -> Value {
+    use tokio::time::{timeout, Duration};
+
+    // STEP 1 — existence check ONLY, no process spawned. Detect the CLI by
+    // finding its file at a known pip/pipx install location. We deliberately do
+    // NOT run a bare `mcpanel` to probe for it: on systems where this GUI binary
+    // is named `mcpanel`, that probe would open another window (and so on — the
+    // "1000 windows" fork bomb). If nothing is on disk, report not-installed
+    // without launching anything at all.
+    let cli_path = match find_cli_path() {
+        Some(p) => p,
+        None => {
+            return serde_json::json!({
+                "ok": false,
+                "error": "mcpanel CLI not found. Install it from https://github.com/DippyCoder/mcpanel-cli"
+            });
+        }
+    };
+    log_to_file(&format!("check_cli: found CLI at {}", cli_path.display()));
+
+    // STEP 2 — the CLI exists, so detection already succeeded (ok:true). Reading
+    // the version is best-effort enrichment for the UI. Because we exec the
+    // resolved absolute path (never our own exe, never a bare PATH lookup), this
+    // can't hit the GUI; timeout + kill_on_drop guard against a hung process.
+    let mut result = serde_json::json!({ "ok": true });
+
+    if let Ok(child) = mcpanel_async_cmd()
         .args(["api", "version"])
-        .output()
+        .kill_on_drop(true)
+        .spawn()
     {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let version = serde_json::from_str::<Value>(&stdout)
-                .ok()
-                .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
-            let mut result = serde_json::json!({"ok": true});
-            if let Some(v) = version {
-                result["version"] = Value::String(v);
+        if let Ok(Ok(out)) = timeout(Duration::from_secs(3), child.wait_with_output()).await {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Some(v) = serde_json::from_str::<Value>(&stdout)
+                    .ok()
+                    .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+                {
+                    result["version"] = Value::String(v);
+                }
             }
-            result
         }
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            serde_json::json!({"ok": false, "error": err})
-        }
-        Err(e) => serde_json::json!({
-            "ok": false,
-            "error": format!(
-                "mcpanel CLI not found.\nInstall it with:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git\n({})",
-                e
-            )
-        }),
     }
+
+    result
 }
 
 #[tauri::command]
@@ -558,7 +760,11 @@ pub async fn import_server_cmd(args: Vec<String>, app: AppHandle) -> Result<Stri
 
 // ─── Send command via unix socket ─────────────────────────────────────────────
 
+// ─── Send command via unix socket ─────────────────────────────────────────────
+// Unix sockets are only available on Unix-like systems
+
 #[tauri::command]
+#[cfg(unix)]
 pub fn send_server_command(id: String, cmd: String) -> Value {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
@@ -576,6 +782,12 @@ pub fn send_server_command(id: String, cmd: String) -> Value {
         }
         Err(e) => serde_json::json!({"error": format!("Not running: {}", e)}),
     }
+}
+
+#[tauri::command]
+#[cfg(not(unix))]
+pub fn send_server_command(id: String, cmd: String) -> Value {
+    serde_json::json!({"error": "Unix sockets not supported on this platform"})
 }
 
 // ─── TCP Ping ─────────────────────────────────────────────────────────────────
@@ -666,6 +878,31 @@ pub async fn ping_server(host: String, port: u16) -> Value {
 
 // ─── Theme management ─────────────────────────────────────────────────────────
 
+#[tauri::command]
+pub fn ensure_builtin_themes() -> Result<(), String> {
+    const THEMES: &[(&str, &str, &str)] = &[
+        ("purple-dark",
+         include_str!("../../src/themes/purple-dark/theme.css"),
+         include_str!("../../src/themes/purple-dark/theme.json")),
+        ("clean-dark",
+         include_str!("../../src/themes/clean-dark/theme.css"),
+         include_str!("../../src/themes/clean-dark/theme.json")),
+        ("dark-slate",
+         include_str!("../../src/themes/dark-slate/theme.css"),
+         include_str!("../../src/themes/dark-slate/theme.json")),
+        ("bright-slate",
+         include_str!("../../src/themes/bright-slate/theme.css"),
+         include_str!("../../src/themes/bright-slate/theme.json")),
+    ];
+    for (id, css, json) in THEMES {
+        let theme_dir = format!("{}/{}", mcpanel_themes_dir(), id);
+        std::fs::create_dir_all(&theme_dir).map_err(|e| e.to_string())?;
+        std::fs::write(format!("{}/theme.css", theme_dir), css).map_err(|e| e.to_string())?;
+        std::fs::write(format!("{}/theme.json", theme_dir), json).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn default_theme_path() -> String {
     format!("{}/default-theme", mcpanel_home())
 }
@@ -739,11 +976,52 @@ pub fn delete_theme(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn check_app_update() -> Value {
+    let url = "https://api.github.com/repos/DippyCoder/MCPanel/releases/latest";
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "10", "-H", "User-Agent: MCPanel", url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000);
+    }
+    match curl.output() {
+        Ok(o) if o.status.success() => {
+            serde_json::from_slice(&o.stdout).unwrap_or(Value::Null)
+        }
+        _ => Value::Null,
+    }
+}
+
+#[tauri::command]
+pub fn check_cli_update() -> Value {
+    let url = "https://api.github.com/repos/DippyCoder/mcpanel-cli/releases/latest";
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "10", "-H", "User-Agent: MCPanel", url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000);
+    }
+    match curl.output() {
+        Ok(o) if o.status.success() => {
+            serde_json::from_slice(&o.stdout).unwrap_or(Value::Null)
+        }
+        _ => Value::Null,
+    }
+}
+
+#[tauri::command]
 pub fn fetch_github_themes() -> Value {
     let url = "https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/themes-index.json";
-    let out = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "10", url])
-        .output();
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "10", url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let out = curl.output();
     match out {
         Ok(o) if o.status.success() => {
             let body = String::from_utf8_lossy(&o.stdout);
@@ -767,10 +1045,14 @@ pub fn install_theme_from_url(url: String) -> Result<Value, String> {
         .unwrap_or_default()
         .as_millis();
     let tmp = format!("{}/._download_{}.zip", themes_dir, ts);
-    let status = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "60", "-o", &tmp, &url])
-        .status()
-        .map_err(|e| e.to_string())?;
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "60", "-o", &tmp, &url]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        curl.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let status = curl.status().map_err(|e| e.to_string())?;
     let result = if status.success() {
         _install_theme_zip(&tmp)
     } else {
@@ -1022,21 +1304,93 @@ fn filepath_to_string(p: tauri_plugin_dialog::FilePath) -> String {
 
 #[tauri::command]
 pub async fn install_cli() -> Result<String, String> {
-    const GITHUB_URL: &str = "git+https://github.com/DippyCoder/mcpanel-cli.git";
-    for pip in &["pip3", "pip"] {
-        let out = tokio::process::Command::new(pip)
-            .args(["install", "--user", GITHUB_URL])
-            .output()
-            .await;
-        match out {
+    // Zip archive URL — pip downloads it directly, no git required on any platform.
+    const ZIP_URL: &str =
+        "https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip";
+
+    // Platform-specific candidate commands.
+    // Each entry is (program, args_before_url):
+    //   program install --user <ZIP_URL>
+    #[cfg(windows)]
+    let candidates: &[(&str, &[&str])] = &[
+        // py is the Python Launcher, standard on Windows installs
+        ("py",      &["-m", "pip", "install", "--user"]),
+        ("pip",     &["install", "--user"]),
+        ("python",  &["-m", "pip", "install", "--user"]),
+    ];
+    #[cfg(not(windows))]
+    let candidates: &[(&str, &[&str])] = &[
+        ("pip3",    &["install", "--user"]),
+        ("pip",     &["install", "--user"]),
+        ("python3", &["-m", "pip", "install", "--user"]),
+    ];
+
+    let mut last_err = String::new();
+    for (prog, prefix_args) in candidates {
+        let mut cmd = tokio::process::Command::new(prog);
+        cmd.args(*prefix_args);
+        cmd.arg(ZIP_URL);
+        #[cfg(windows)]
+        { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
+        match cmd.output().await {
             Ok(o) if o.status.success() => {
-                log_to_file("install_cli: mcpanel-cli installed from GitHub");
+                log_to_file("install_cli: mcpanel-cli installed from GitHub zip");
+
+                // On Windows, pip --user installs to a Scripts dir that isn't on PATH
+                // by default. Ask the same Python interpreter where it put the scripts,
+                // then persist that directory into the user's PATH registry entry.
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    // The pip candidate may be "pip" itself; find the associated Python.
+                    let py = if prog.starts_with("pip") { "python" } else { prog };
+                    if let Ok(out) = tokio::process::Command::new(py)
+                        .args(["-c", "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"])
+                        .creation_flags(0x08000000)
+                        .output().await
+                    {
+                        let scripts = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !scripts.is_empty() {
+                            // Try machine PATH first (requires admin); fall back to user PATH.
+                            let ps_cmd = format!(
+                                "$s='{s}'; \
+                                 $m=[Environment]::GetEnvironmentVariable('PATH','Machine'); \
+                                 $u=[Environment]::GetEnvironmentVariable('PATH','User'); \
+                                 if($m -notlike ('*'+$s+'*')){{ \
+                                   try{{[Environment]::SetEnvironmentVariable('PATH',$m.TrimEnd(';')+';'+$s,'Machine')}}catch{{}} \
+                                 }}; \
+                                 if((([Environment]::GetEnvironmentVariable('PATH','Machine')) -notlike ('*'+$s+'*')) -and ($u -notlike ('*'+$s+'*'))){{ \
+                                   [Environment]::SetEnvironmentVariable('PATH',$u.TrimEnd(';')+';'+$s,'User') \
+                                 }}",
+                                s = scripts
+                            );
+                            let _ = tokio::process::Command::new("powershell")
+                                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+                                       "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
+                                .creation_flags(0x08000000)
+                                .output().await;
+                            log_to_file(&format!("install_cli: added {} to PATH", scripts));
+                        }
+                    }
+                }
+
                 return Ok("mcpanel-cli installed successfully".into());
             }
-            _ => continue,
+            Ok(o) => {
+                last_err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            }
+            Err(e) => { last_err = e.to_string(); }
         }
     }
-    Err("Could not install mcpanel-cli. Make sure python3 and pip are installed,\nthen run:  pip3 install --user git+https://github.com/DippyCoder/mcpanel-cli.git".into())
+
+    #[cfg(windows)]
+    let hint = "py -m pip install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip";
+    #[cfg(not(windows))]
+    let hint = "pip3 install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip";
+
+    Err(format!(
+        "Could not install mcpanel-cli. Make sure Python and pip are installed, then run:\n  {hint}\nLast error: {last_err}"
+    ))
 }
 
 // ─── File upload ──────────────────────────────────────────────────────────────
@@ -1197,6 +1551,169 @@ pub fn read_server_file(id: String, rel_path: String) -> Result<String, String> 
     std::fs::read_to_string(&target).map_err(|_| "File is binary or cannot be read as text".into())
 }
 
+// ─── Profile file system ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn update_profile(id: String, name: Option<String>, description: Option<String>, software: Option<Vec<String>>, versions: Option<Vec<String>>) -> Result<(), String> {
+    let dir = format!("{}/profiles/{}", mcpanel_home(), id);
+    let profile_json = format!("{}/profile.json", dir);
+    let content = std::fs::read_to_string(&profile_json).map_err(|e| e.to_string())?;
+    let mut profile: serde_json::Map<String, Value> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    if let Some(v) = name        { profile.insert("name".into(), Value::String(v)); }
+    if let Some(v) = description { profile.insert("description".into(), Value::String(v)); }
+    if let Some(v) = software    { profile.insert("software".into(), Value::Array(v.into_iter().map(Value::String).collect())); }
+    if let Some(v) = versions    { profile.insert("versions".into(), Value::Array(v.into_iter().map(Value::String).collect())); }
+    let out = serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?;
+    std::fs::write(&profile_json, out).map_err(|e| e.to_string())
+}
+
+fn get_profile_dir(id: &str) -> Result<String, String> {
+    let dir = format!("{}/profiles/{}", mcpanel_home(), id);
+    if std::path::Path::new(&dir).is_dir() {
+        Ok(dir)
+    } else {
+        Err("Profile not found".into())
+    }
+}
+
+fn walk_dir_tree(path: &std::path::Path, base: &std::path::Path) -> Value {
+    let mut entries: Vec<Value> = vec![];
+    if let Ok(read_dir) = std::fs::read_dir(path) {
+        let mut items: Vec<_> = read_dir.flatten().collect();
+        items.sort_by_key(|e| e.file_name());
+        for entry in items {
+            let Ok(meta) = entry.metadata() else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let rel = entry.path()
+                .strip_prefix(base).unwrap_or(&entry.path())
+                .to_string_lossy().replace('\\', "/");
+            if meta.is_dir() {
+                entries.push(serde_json::json!({
+                    "name": name, "type": "dir", "path": rel,
+                    "children": walk_dir_tree(&entry.path(), base)
+                }));
+            } else {
+                entries.push(serde_json::json!({
+                    "name": name, "type": "file", "path": rel, "size": meta.len()
+                }));
+            }
+        }
+    }
+    Value::Array(entries)
+}
+
+#[tauri::command]
+pub fn get_profile_file_tree(id: String) -> Value {
+    match get_profile_dir(&id) {
+        Ok(dir) => {
+            let base = std::path::PathBuf::from(&dir);
+            serde_json::json!({ "tree": walk_dir_tree(&base, &base) })
+        }
+        Err(e) => serde_json::json!({ "error": e }),
+    }
+}
+
+#[tauri::command]
+pub fn read_profile_file(id: String, rel_path: String) -> Result<String, String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    let meta = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if meta.len() > 5 * 1024 * 1024 {
+        return Err("File too large to edit in-app (max 5MB)".into());
+    }
+    std::fs::read_to_string(&target).map_err(|_| "File is binary or cannot be read as text".into())
+}
+
+#[tauri::command]
+pub fn write_profile_file(id: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&dest, &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_profile_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let target = std::path::Path::new(&dir).join(&rel_path);
+    if !target.exists() { return Err("File not found".into()); }
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(&target).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn create_profile_dir(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    std::fs::create_dir_all(std::path::Path::new(&dir).join(&rel_path)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_profile_file(id: String, rel_path: String) -> Result<(), String> {
+    if rel_path.contains("..") || rel_path.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let dest = std::path::Path::new(&dir).join(&rel_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if dest.exists() { return Err("A file with that name already exists".into()); }
+    std::fs::write(&dest, "").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_profile_file(id: String, old_path: String, new_path: String) -> Result<(), String> {
+    if old_path.contains("..") || old_path.starts_with('/')
+        || new_path.contains("..") || new_path.starts_with('/')
+    {
+        return Err("Invalid path".into());
+    }
+    let dir = get_profile_dir(&id)?;
+    let base = std::path::Path::new(&dir);
+    let src = base.join(&old_path);
+    let dst = base.join(&new_path);
+    if !src.exists() { return Err("Source not found".into()); }
+    if dst.exists() { return Err("A file with that name already exists".into()); }
+    std::fs::rename(&src, &dst).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upload_files_to_profile(id: String, src_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    if !dest_dir.is_empty() && (dest_dir.contains("..") || dest_dir.starts_with('/')) {
+        return Err("Invalid destination path".into());
+    }
+    let profile_dir = get_profile_dir(&id)?;
+    let base = std::path::Path::new(&profile_dir);
+    let dest_base = if dest_dir.is_empty() { base.to_path_buf() } else { base.join(&dest_dir) };
+    std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
+    for src_path in &src_paths {
+        let src = std::path::Path::new(src_path);
+        if src.is_file() {
+            if let Some(name) = src.file_name() {
+                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1310,6 +1827,318 @@ pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+// ─── Velocity proxy link ──────────────────────────────────────────────────────
+
+fn find_velocity_try_array(lines: &[&str]) -> Option<(usize, usize, Vec<String>)> {
+    let mut in_servers = false;
+    let mut try_start: Option<usize> = None;
+    let mut in_array = false;
+    let mut entries: Vec<String> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t == "[servers]" {
+            in_servers = true;
+            continue;
+        }
+        if in_servers && t.starts_with('[') && t != "[servers]" {
+            in_servers = false;
+        }
+        if !in_servers { continue; }
+
+        if try_start.is_none() && t.starts_with("try") {
+            if let Some(eq) = t.find('=') {
+                let after = t[eq + 1..].trim();
+                if after.starts_with('[') {
+                    try_start = Some(i);
+                    if after.ends_with(']') {
+                        let inner = &after[1..after.len() - 1];
+                        for part in inner.split(',') {
+                            let s = part.trim().trim_matches('"').trim();
+                            if !s.is_empty() { entries.push(s.to_string()); }
+                        }
+                        return Some((i, i, entries));
+                    }
+                    in_array = true;
+                    continue;
+                }
+            }
+        }
+
+        if in_array {
+            if t == "]" || t == "]," {
+                return Some((try_start.unwrap(), i, entries));
+            }
+            let entry = t.trim_matches(',').trim().trim_matches('"').trim().to_string();
+            if !entry.is_empty() { entries.push(entry); }
+        }
+    }
+    None
+}
+
+fn parse_velocity_try_list(contents: &str) -> Vec<String> {
+    let lines: Vec<&str> = contents.lines().collect();
+    find_velocity_try_array(&lines).map(|(_, _, v)| v).unwrap_or_default()
+}
+
+fn get_server_port_from_config(id: &str) -> u16 {
+    let dir = match get_server_dir(id) {
+        Ok(d) => d,
+        Err(_) => return 25565,
+    };
+    let props = format!("{}/server.properties", dir);
+    if let Ok(contents) = std::fs::read_to_string(&props) {
+        for line in contents.lines() {
+            if line.starts_with("server-port=") {
+                if let Ok(p) = line["server-port=".len()..].trim().parse::<u16>() {
+                    return p;
+                }
+            }
+        }
+    }
+    25565
+}
+
+fn read_velocity_secret_str(velocity_dir: &str) -> Option<String> {
+    let toml_path = format!("{}/velocity.toml", velocity_dir);
+    if let Ok(contents) = std::fs::read_to_string(&toml_path) {
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let fname = &t[s + 1..s + 1 + e];
+                        let file_path = format!("{}/{}", velocity_dir, fname);
+                        if let Ok(secret) = std::fs::read_to_string(&file_path) {
+                            let secret = secret.trim().to_string();
+                            if !secret.is_empty() { return Some(secret); }
+                        }
+                    }
+                }
+            }
+        }
+        for line in contents.lines() {
+            let t = line.trim();
+            if t.starts_with("forwarding-secret") && !t.starts_with("forwarding-secret-file") && t.contains('=') {
+                if let Some(s) = t.find('"') {
+                    if let Some(e) = t[s + 1..].find('"') {
+                        let secret = &t[s + 1..s + 1 + e];
+                        if !secret.is_empty() { return Some(secret.to_string()); }
+                    }
+                }
+            }
+        }
+    }
+    let secret_path = format!("{}/forwarding.secret", velocity_dir);
+    if let Ok(secret) = std::fs::read_to_string(&secret_path) {
+        let s = secret.trim().to_string();
+        if !s.is_empty() { return Some(s); }
+    }
+    None
+}
+
+fn update_velocity_toml(contents: &str, server_name: &str, address: &str, priority: u64) -> Result<String, String> {
+    let lines: Vec<&str> = contents.lines().collect();
+    let (try_start, try_end, mut entries) = find_velocity_try_array(&lines)
+        .ok_or("Could not find try = [...] in [servers] section of velocity.toml")?;
+
+    let server_entry_exists = lines.iter().any(|l| {
+        let t = l.trim();
+        t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
+    });
+
+    if !entries.contains(&server_name.to_string()) {
+        let pos = (priority as usize).min(entries.len());
+        entries.insert(pos, server_name.to_string());
+    }
+
+    let try_line = format!(
+        "try = [{}]",
+        entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
+    );
+
+    let mut result = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if i == try_start {
+            if !server_entry_exists {
+                result.push_str(&format!("{} = \"{}\"\n", server_name, address));
+            }
+            result.push_str(&try_line);
+            result.push('\n');
+            i = try_end + 1;
+            continue;
+        }
+        result.push_str(lines[i]);
+        result.push('\n');
+        i += 1;
+    }
+    Ok(result)
+}
+
+fn ensure_velocity_forwarding_modern(contents: &str) -> String {
+    let mut result = String::new();
+    for line in contents.lines() {
+        let t = line.trim();
+        if t.starts_with("player-info-forwarding-mode") && t.contains('=') {
+            if let Some(eq) = t.find('=') {
+                let val = t[eq + 1..].trim().trim_matches('"').to_uppercase();
+                if val == "NONE" {
+                    result.push_str("player-info-forwarding-mode = \"MODERN\"\n");
+                    continue;
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
+fn update_paper_global_yml(contents: &str, secret: &str) -> String {
+    let mut result = String::new();
+    let mut in_proxies = false;
+    let mut in_velocity = false;
+    let mut proxies_indent: usize = 0;
+    let mut velocity_indent: usize = 0;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+
+        if in_velocity && indent <= velocity_indent {
+            in_velocity = false;
+        }
+        if in_proxies && indent <= proxies_indent && trimmed != "proxies:" {
+            in_proxies = false;
+            in_velocity = false;
+        }
+
+        if !in_proxies && trimmed == "proxies:" {
+            in_proxies = true;
+            proxies_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+        if in_proxies && !in_velocity && trimmed == "velocity:" {
+            in_velocity = true;
+            velocity_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if in_velocity {
+            let spaces = " ".repeat(indent);
+            if trimmed.starts_with("enabled:") {
+                result.push_str(&format!("{}enabled: true\n", spaces));
+                continue;
+            }
+            if trimmed.starts_with("online-mode:") {
+                result.push_str(&format!("{}online-mode: true\n", spaces));
+                continue;
+            }
+            if trimmed.starts_with("secret:") {
+                result.push_str(&format!("{}secret: '{}'\n", spaces, secret));
+                continue;
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
+#[tauri::command]
+pub fn proxy_info(velocity_id: String) -> Value {
+    let dir = match get_server_dir(&velocity_id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let toml_path = format!("{}/velocity.toml", dir);
+    let contents = match std::fs::read_to_string(&toml_path) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": format!("Failed to read velocity.toml: {}", e)}),
+    };
+    serde_json::json!({"tryList": parse_velocity_try_list(&contents)})
+}
+
+#[tauri::command]
+pub fn link_to_proxy(
+    paper_id: String,
+    velocity_id: String,
+    server_name: String,
+    priority: u64,
+    custom_ip: Option<String>,
+) -> Value {
+    let paper_dir = match get_server_dir(&paper_id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let velocity_dir = match get_server_dir(&velocity_id) {
+        Ok(d) => d,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+
+    let port = get_server_port_from_config(&paper_id);
+    let address = match custom_ip {
+        Some(ref ip) if !ip.is_empty() => format!("{}:{}", ip, port),
+        _ => format!("127.0.0.1:{}", port),
+    };
+
+    // Update velocity.toml
+    let toml_path = format!("{}/velocity.toml", velocity_dir);
+    let toml_contents = match std::fs::read_to_string(&toml_path) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": format!("Failed to read velocity.toml: {}", e)}),
+    };
+    let updated_toml = match update_velocity_toml(&toml_contents, &server_name, &address, priority) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let updated_toml = ensure_velocity_forwarding_modern(&updated_toml);
+    if let Err(e) = std::fs::write(&toml_path, &updated_toml) {
+        return serde_json::json!({"error": format!("Failed to write velocity.toml: {}", e)});
+    }
+
+    // Set online-mode=false in server.properties
+    let props_path = format!("{}/server.properties", paper_dir);
+    if let Ok(props) = std::fs::read_to_string(&props_path) {
+        let updated = if props.contains("online-mode=") {
+            let mut r = String::new();
+            for line in props.lines() {
+                if line.starts_with("online-mode=") {
+                    r.push_str("online-mode=false\n");
+                } else {
+                    r.push_str(line);
+                    r.push('\n');
+                }
+            }
+            r
+        } else {
+            format!("{}\nonline-mode=false\n", props.trim_end())
+        };
+        let _ = std::fs::write(&props_path, updated);
+    }
+
+    // Update paper-global.yml with forwarding secret
+    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
+    let paper_global_path = format!("{}/config/paper-global.yml", paper_dir);
+    if let Ok(paper_global) = std::fs::read_to_string(&paper_global_path) {
+        let updated = update_paper_global_yml(&paper_global, &secret);
+        let _ = std::fs::write(&paper_global_path, updated);
+    }
+
+    serde_json::json!({"success": true})
+}
+
 // ─── Velocity forwarding secret ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -1372,6 +2201,16 @@ pub fn get_velocity_secret(id: String) -> Value {
 
 #[tauri::command]
 pub fn get_system_stats() -> Value {
+    #[cfg(windows)]
+    return get_system_stats_windows();
+    #[cfg(target_os = "macos")]
+    return get_system_stats_macos();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return get_system_stats_linux();
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn get_system_stats_linux() -> Value {
     let mut total_ram: u64 = 0;
     let mut avail_ram: u64 = 0;
 
@@ -1403,6 +2242,162 @@ pub fn get_system_stats() -> Value {
 
     let cpu_pct = ((load1m / cpu_count as f64) * 1000.0).round() / 10.0;
     let cpu_pct = cpu_pct.min(100.0);
+    let used_ram = total_ram.saturating_sub(avail_ram);
+
+    serde_json::json!({
+        "totalRam": total_ram,
+        "availRam": avail_ram,
+        "usedRam": used_ram,
+        "cpuPct": cpu_pct,
+        "loadAvg": load1m,
+    })
+}
+
+// Cache previous CPU times between polls so we can compute a delta without sleeping.
+// First call returns 0% (no previous sample); subsequent calls are accurate.
+#[cfg(windows)]
+fn cpu_prev_mutex() -> &'static std::sync::Mutex<Option<(u64, u64)>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<Option<(u64, u64)>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(windows)]
+fn get_system_stats_windows() -> Value {
+    use std::mem;
+
+    // ── RAM ──────────────────────────────────────────────────────────────────
+    #[repr(C)]
+    struct MEMORYSTATUSEX {
+        dwLength: u32,
+        dwMemoryLoad: u32,
+        ullTotalPhys: u64,
+        ullAvailPhys: u64,
+        ullTotalPageFile: u64,
+        ullAvailPageFile: u64,
+        ullTotalVirtual: u64,
+        ullAvailVirtual: u64,
+        ullAvailExtendedVirtual: u64,
+    }
+
+    extern "system" {
+        fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX) -> i32;
+    }
+
+    let (total_ram, avail_ram) = unsafe {
+        let mut s: MEMORYSTATUSEX = mem::zeroed();
+        s.dwLength = mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if GlobalMemoryStatusEx(&mut s) != 0 {
+            (s.ullTotalPhys, s.ullAvailPhys)
+        } else {
+            (0u64, 0u64)
+        }
+    };
+
+    // ── CPU (delta between successive calls) ──────────────────────────────────
+    #[repr(C)]
+    struct FILETIME { lo: u32, hi: u32 }
+
+    extern "system" {
+        fn GetSystemTimes(idle: *mut FILETIME, kernel: *mut FILETIME, user: *mut FILETIME) -> i32;
+    }
+
+    let ft64 = |ft: &FILETIME| -> u64 { ((ft.hi as u64) << 32) | ft.lo as u64 };
+
+    let cpu_pct: f64 = unsafe {
+        let mut idle: FILETIME = mem::zeroed();
+        let mut kern: FILETIME = mem::zeroed();
+        let mut user: FILETIME = mem::zeroed();
+
+        if GetSystemTimes(&mut idle, &mut kern, &mut user) != 0 {
+            let idle_now  = ft64(&idle);
+            // Kernel time includes idle time on Windows.
+            let total_now = ft64(&kern) + ft64(&user);
+
+            let mut prev = cpu_prev_mutex().lock().unwrap();
+            let pct = if let Some((prev_idle, prev_total)) = *prev {
+                let d_idle  = idle_now.saturating_sub(prev_idle);
+                let d_total = total_now.saturating_sub(prev_total);
+                if d_total > 0 {
+                    let busy = d_total.saturating_sub(d_idle);
+                    ((busy as f64 / d_total as f64) * 100.0).min(100.0).round()
+                } else {
+                    0.0
+                }
+            } else {
+                0.0 // first sample — no previous reading yet
+            };
+            *prev = Some((idle_now, total_now));
+            pct
+        } else {
+            0.0
+        }
+    };
+
+    let used_ram = total_ram.saturating_sub(avail_ram);
+    serde_json::json!({
+        "totalRam": total_ram,
+        "availRam": avail_ram,
+        "usedRam": used_ram,
+        "cpuPct": cpu_pct,
+        "loadAvg": cpu_pct,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn get_system_stats_macos() -> Value {
+    // ── Total RAM ─────────────────────────────────────────────────────────────
+    let total_ram: u64 = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0);
+
+    // ── Available RAM (free + inactive + speculative pages × page size) ───────
+    let avail_ram: u64 = (|| -> Option<u64> {
+        let page_size: u64 = std::process::Command::new("sysctl")
+            .args(["-n", "hw.pagesize"])
+            .output().ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            .unwrap_or(4096);
+
+        let vm = std::process::Command::new("vm_stat").output().ok()?;
+        let text = String::from_utf8_lossy(&vm.stdout);
+        let mut pages_free: u64 = 0;
+        let mut pages_inactive: u64 = 0;
+        let mut pages_speculative: u64 = 0;
+        for line in text.lines() {
+            let val = || -> Option<u64> {
+                line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()
+            };
+            if line.starts_with("Pages free:")          { pages_free         = val().unwrap_or(0); }
+            if line.starts_with("Pages inactive:")       { pages_inactive      = val().unwrap_or(0); }
+            if line.starts_with("Pages speculative:")    { pages_speculative   = val().unwrap_or(0); }
+        }
+        Some((pages_free + pages_inactive + pages_speculative) * page_size)
+    })().unwrap_or(0);
+
+    // ── CPU (load average ÷ logical CPU count) ────────────────────────────────
+    let load1m: f64 = std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            // Output: "{ 0.42 0.38 0.31 }"
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.split_whitespace().nth(1).and_then(|n| n.parse().ok())
+        })
+        .unwrap_or(0.0);
+
+    let cpu_count: f64 = std::process::Command::new("sysctl")
+        .args(["-n", "hw.logicalcpu"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(1.0_f64.into());
+
+    let cpu_pct = ((load1m / cpu_count) * 100.0).min(100.0).round();
     let used_ram = total_ram.saturating_sub(avail_ram);
 
     serde_json::json!({

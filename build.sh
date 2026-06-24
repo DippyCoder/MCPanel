@@ -1,19 +1,10 @@
 #!/bin/bash
 # MCPanel Build Script (Tauri)
-# Usage: ./build.sh [appimage|deb|rpm|linux|all|clean]
+# Usage: ./build.sh [appimage|deb|rpm|linux|all|windows|clean]
 #        No argument → interactive menu
 
 set -euo pipefail
 cd "$(dirname "$0")"
-
-# linuxdeploy (used by Tauri's AppImage bundler) is itself an AppImage.
-# On Fedora / systems without FUSE mounted, it must extract and run without FUSE.
-export APPIMAGE_EXTRACT_AND_RUN=1
-
-# linuxdeploy bundles its own ancient `strip` binary that can't parse the
-# `.relr.dyn` ELF section type used by Fedora 43+ libraries. Skip stripping
-# to avoid the build failure; the AppImage is slightly larger but works fine.
-export NO_STRIP=1
 
 OUT_DIR="src-tauri/target/release/bundle"
 
@@ -30,30 +21,20 @@ check_deps() {
     fi
 
     if [[ "$(uname -s)" == "Linux" ]]; then
-        if command -v dnf >/dev/null 2>&1; then
-            # Fedora / RHEL / openSUSE (dnf)
-            DNF_PKGS=(webkit2gtk4.1-devel openssl-devel pkg-config gcc
-                      libappindicator-gtk3-devel librsvg2-devel rpm-build fuse fuse-libs)
-            MISSING=()
-            for pkg in "${DNF_PKGS[@]}"; do
-                rpm -q "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
-            done
-            if [[ ${#MISSING[@]} -gt 0 ]]; then
-                msg "Installing system dependencies via dnf: ${MISSING[*]}"
-                sudo dnf install -y "${MISSING[@]}"
-            fi
-        elif command -v apt-get >/dev/null 2>&1; then
-            # Debian / Ubuntu (apt)
-            APT_PKGS=(libwebkit2gtk-4.1-dev libssl-dev pkg-config gcc
-                      libappindicator3-dev librsvg2-dev rpm fuse libfuse2)
-            for pkg in "${APT_PKGS[@]}"; do
+        if command -v apt-get >/dev/null 2>&1; then
+            for pkg in libwebkit2gtk-4.1-dev libssl-dev pkg-config; do
                 dpkg -s "$pkg" >/dev/null 2>&1 || {
                     msg "Installing system dependency: $pkg"
                     sudo apt-get install -y "$pkg"
                 }
             done
-        else
-            msg "Unknown package manager — make sure webkit2gtk4.1-devel, openssl-devel and pkg-config are installed."
+        elif command -v dnf >/dev/null 2>&1; then
+            for pkg in webkit2gtk4.1-devel openssl-devel pkgconf-pkg-config; do
+                rpm -q "$pkg" >/dev/null 2>&1 || {
+                    msg "Installing system dependency: $pkg"
+                    sudo dnf install -y "$pkg"
+                }
+            done
         fi
     fi
 }
@@ -81,9 +62,29 @@ build_deb() {
 
 build_rpm() {
     msg "Building .rpm package..."
-    sudo apt-get install -y rpm >/dev/null 2>&1 || true
+    if command -v dnf >/dev/null 2>&1; then
+        rpm -q rpm-build >/dev/null 2>&1 || sudo dnf install -y rpm-build
+    elif command -v apt-get >/dev/null 2>&1; then
+        err "RPM builds require a Fedora/RHEL system. Use the GitHub Actions workflow or a Fedora container."
+    fi
     (cd src-tauri && cargo tauri build --bundles rpm)
     ok "Output: $OUT_DIR/rpm/"
+}
+
+build_windows() {
+    msg "Cross-compiling Windows NSIS installer (.exe) for x86_64..."
+    if command -v apt-get >/dev/null 2>&1; then
+        for pkg in mingw-w64 nsis; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || { msg "Installing $pkg..."; sudo apt-get install -y "$pkg"; }
+        done
+    elif command -v dnf >/dev/null 2>&1; then
+        for pkg in mingw64-gcc mingw64-winpthreads-static nsis; do
+            rpm -q "$pkg" >/dev/null 2>&1 || { msg "Installing $pkg..."; sudo dnf install -y "$pkg"; }
+        done
+    fi
+    rustup target add x86_64-pc-windows-gnu
+    (cd src-tauri && cargo tauri build --target x86_64-pc-windows-gnu --bundles nsis)
+    ok "NSIS installer → src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/"
 }
 
 do_clean() {
@@ -100,9 +101,10 @@ if [ -n "${1:-}" ]; then
         deb)         build_deb ;;
         rpm)         build_rpm ;;
         linux|all)   build_all ;;
+        windows)     build_windows ;;
         clean)       do_clean ;;
         *)
-            echo "Usage: $0 [appimage|deb|rpm|linux|all|clean]"
+            echo "Usage: $0 [appimage|deb|rpm|linux|all|windows|clean]"
             exit 1
             ;;
     esac
@@ -113,13 +115,14 @@ echo ""
 echo "  MCPanel Build Tool (Tauri)"
 echo "  =========================="
 echo ""
-echo "    [1]  Linux  (AppImage + .deb + .rpm)   →  $OUT_DIR/"
-echo "    [2]  Linux  AppImage only"
-echo "    [3]  Linux  .deb  (Debian / Ubuntu)"
-echo "    [4]  Linux  .rpm  (Fedora / RHEL)"
-echo "    [5]  Clean build artifacts"
+echo "    [1]  Linux   AppImage + .deb + .rpm   →  $OUT_DIR/"
+echo "    [2]  Linux   AppImage only"
+echo "    [3]  Linux   .deb  (Debian / Ubuntu)"
+echo "    [4]  Linux   .rpm  (Fedora / RHEL)"
+echo "    [5]  Windows cross-compile NSIS installer (.exe)"
+echo "    [6]  Clean build artifacts"
 echo ""
-read -rp "  Enter choice (1-5): " CHOICE
+read -rp "  Enter choice (1-6): " CHOICE
 echo ""
 
 case "$CHOICE" in
@@ -127,7 +130,8 @@ case "$CHOICE" in
     2) build_appimage ;;
     3) build_deb ;;
     4) build_rpm ;;
-    5) do_clean ;;
+    5) build_windows ;;
+    6) do_clean ;;
     *) err "Invalid choice." ;;
 esac
 

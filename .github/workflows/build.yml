@@ -24,7 +24,6 @@ jobs:
             patchelf \
             libssl-dev \
             pkg-config \
-            rpm \
             squashfs-tools \
             libfuse2
 
@@ -38,9 +37,9 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build AppImage, deb, rpm
+      - name: Build AppImage and deb
         working-directory: src-tauri
-        run: cargo tauri build --bundles appimage,deb,rpm
+        run: cargo tauri build --bundles appimage,deb
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
@@ -54,14 +53,103 @@ jobs:
           name: linux-deb
           path: src-tauri/target/release/bundle/deb/*.deb
 
+  build-linux-rpm:
+    runs-on: ubuntu-22.04
+    container: fedora:41
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            webkit2gtk4.1-devel \
+            libappindicator-gtk3-devel \
+            librsvg2-devel \
+            patchelf \
+            openssl-devel \
+            pkgconf-pkg-config \
+            rpm-build \
+            curl \
+            gcc
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build RPM
+        working-directory: src-tauri
+        run: cargo tauri build --bundles rpm
+
       - name: Upload rpm
         uses: actions/upload-artifact@v4
         with:
           name: linux-rpm
           path: src-tauri/target/release/bundle/rpm/*.rpm
 
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Windows installers
+        working-directory: src-tauri
+        run: cargo tauri build --bundles nsis,msi
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Upload NSIS
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build DMG
+        working-directory: src-tauri
+        run: cargo tauri build --bundles dmg
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+
   release:
-    needs: build-linux
+    needs: [build-linux, build-linux-rpm, build-windows, build-macos]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     permissions:
@@ -76,3 +164,6 @@ jobs:
             linux-appimage/*.AppImage
             linux-deb/*.deb
             linux-rpm/*.rpm
+            windows-msi/*.msi
+            windows-nsis/*-setup.exe
+            macos-dmg/*.dmg

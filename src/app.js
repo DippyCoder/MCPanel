@@ -87,16 +87,26 @@ async function init() {
   // Silent update checks on startup — populate status and toast if update found
   window.mcpanel.checkUpdate().then(result => applyUpdateResult(result));
   window.mcpanel.checkCliUpdate().then(result => applyCliUpdateResult(result));
+  checkPrivacyPolicy();
 
   // File drag-drop + close notification via the Tauri window handle
   const _win = window.__TAURI__?.window?.getCurrentWindow?.();
   if (_win?.listen) {
     _win.listen('tauri://drag-drop', async (event) => {
+      const paths = event.payload?.paths || [];
+      if (!paths.length) return;
+
+      const profilePane = document.getElementById('pane-profile-files');
+      if (currentProfileId && profilePane && !profilePane.classList.contains('hidden')) {
+        document.getElementById('profile-file-drop-zone')?.classList.remove('drop-active');
+        document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
+        await uploadProfileFilesFromPaths(paths, profileNavPaths.join('/'));
+        return;
+      }
+
       if (!currentServerId) return;
       const pane = document.getElementById('pane-files');
       if (!pane || pane.classList.contains('hidden')) return;
-      const paths = event.payload?.paths || [];
-      if (!paths.length) return;
       document.getElementById('file-drop-zone')?.classList.remove('drop-active');
       document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
       await uploadFilesFromPaths(paths, fileNavPaths.join('/'));
@@ -514,6 +524,33 @@ function closeEulaModal() {
   pendingEulaServerId = null;
 }
 
+// ─── Privacy Policy Update Check ─────────────────────────────────────────────
+async function checkPrivacyPolicy() {
+  try {
+    const res = await fetch('https://gist.githubusercontent.com/DippyCoder/559659736b49a56964dae2e5c0f5f5dc/raw');
+    if (!res.ok) return;
+    const text = await res.text();
+    const match = text.match(/\*\*Document Last Updated:\*\*\s*(.+)/);
+    if (!match) return;
+    const remoteDate = match[1].trim();
+    const localDate = localStorage.getItem('privacy_policy_date');
+    if (localDate && localDate !== remoteDate) {
+      document.getElementById('privacy-update-date').textContent = remoteDate;
+      document.getElementById('modal-privacy-update').classList.remove('hidden');
+    }
+    localStorage.setItem('privacy_policy_date', remoteDate);
+  } catch (_) {}
+}
+
+function closePrivacyUpdateModal() {
+  document.getElementById('modal-privacy-update').classList.add('hidden');
+}
+
+function openPrivacyPolicy() {
+  window.mcpanel.openExternal('https://get-mcpanel.vercel.app/privacy');
+  closePrivacyUpdateModal();
+}
+
 function updateDetailStarting() {
   const bigStatus = document.getElementById('big-status-badge');
   if (bigStatus) { bigStatus.className = 'big-status starting'; bigStatus.textContent = 'STARTING'; }
@@ -808,17 +845,92 @@ function submitFileInput() {
 // ─── File Editor ──────────────────────────────────────────────────────────────
 
 let _editorRelPath = null;
+let _editorCtx = null; // { type: 'server'|'profile', id: string }
 
-async function openFileEditor(relPath, name) {
+let _aceEditor = null;
+
+function _initAceEditor() {
+  if (_aceEditor) return;
+  _aceEditor = ace.edit('file-editor-content');
+  _aceEditor.setOptions({
+    showPrintMargin: false,
+    tabSize: 2,
+    useSoftTabs: true,
+    useWorker: false,
+    wrap: false,
+    scrollPastEnd: 0.3,
+  });
+  _aceEditor.renderer.setScrollMargin(4, 4, 0, 0);
+  _aceEditor.on('change', _runEditorValidation);
+}
+
+function _aceTheme() {
+  return (config.activeTheme === 'bright-slate')
+    ? 'ace/theme/github'
+    : 'ace/theme/tomorrow_night';
+}
+
+function _aceMode(filename) {
+  const ext = filename.split('.').pop().toLowerCase();
+  const map = {
+    yml: 'yaml', yaml: 'yaml',
+    json: 'json',
+    properties: 'properties',
+    toml: 'toml',
+    xml: 'xml', htm: 'xml', html: 'xml',
+  };
+  return `ace/mode/${map[ext] || 'text'}`;
+}
+
+function _runEditorValidation() {
+  if (!_aceEditor) return;
+  const modeId = _aceEditor.session.getMode().$id || '';
+  const src = _aceEditor.getValue();
+  const anns = [];
+
+  if (modeId.endsWith('json') && src.trim()) {
+    try { JSON.parse(src); }
+    catch (e) {
+      const m = e.message.match(/position (\d+)/i);
+      if (m) {
+        const pos = parseInt(m[1]);
+        const before = src.slice(0, pos);
+        const lines = before.split('\n');
+        anns.push({ row: lines.length - 1, column: lines[lines.length - 1].length, text: e.message, type: 'error' });
+      } else {
+        anns.push({ row: 0, column: 0, text: e.message, type: 'error' });
+      }
+    }
+  } else if (modeId.endsWith('yaml') && src.trim()) {
+    try { jsyaml.load(src); }
+    catch (e) {
+      const row = (e.mark && e.mark.line != null) ? e.mark.line : 0;
+      const col = (e.mark && e.mark.column != null) ? e.mark.column : 0;
+      anns.push({ row, column: col, text: e.reason || e.message, type: 'error' });
+    }
+  }
+
+  _aceEditor.session.setAnnotations(anns);
+}
+
+async function openFileEditor(relPath, name, ctx) {
   _editorRelPath = relPath;
+  _editorCtx = ctx || { type: 'server', id: currentServerId };
   document.getElementById('file-editor-title').textContent = name;
   const saveBtn = document.getElementById('file-editor-save');
   saveBtn.disabled = true; saveBtn.textContent = 'Loading…';
   openModal('modal-file-editor');
+  _initAceEditor();
+  _aceEditor.setTheme(_aceTheme());
   try {
-    const content = await window.mcpanel.readServerFile(currentServerId, relPath);
-    document.getElementById('file-editor-content').value = content;
+    const content = _editorCtx.type === 'profile'
+      ? await window.mcpanel.readProfileFile(_editorCtx.id, relPath)
+      : await window.mcpanel.readServerFile(_editorCtx.id, relPath);
+    _aceEditor.session.setMode(_aceMode(name));
+    _aceEditor.setValue(content, -1);
+    _runEditorValidation();
     saveBtn.disabled = false; saveBtn.textContent = 'Save';
+    setTimeout(() => _aceEditor && _aceEditor.resize(), 50);
   } catch (e) {
     closeModal('modal-file-editor');
     toast(String(e), 'error');
@@ -826,17 +938,25 @@ async function openFileEditor(relPath, name) {
 }
 
 async function saveFileEditor() {
-  if (!_editorRelPath || !currentServerId) return;
+  if (!_editorRelPath || !_editorCtx || !_aceEditor) return;
   const saveBtn = document.getElementById('file-editor-save');
   saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
   try {
-    const content = document.getElementById('file-editor-content').value;
+    const content = _aceEditor.getValue();
     const data = Array.from(new TextEncoder().encode(content));
-    await window.mcpanel.writeServerFile(currentServerId, _editorRelPath, data);
-    closeModal('modal-file-editor');
-    toast('File saved', 'success');
-    cachedFileTree = null;
-    await openFilesTab();
+    if (_editorCtx.type === 'profile') {
+      await window.mcpanel.writeProfileFile(_editorCtx.id, _editorRelPath, data);
+      closeModal('modal-file-editor');
+      toast('File saved', 'success');
+      profileCachedFileTree = null;
+      renderProfileFileBrowser();
+    } else {
+      await window.mcpanel.writeServerFile(_editorCtx.id, _editorRelPath, data);
+      closeModal('modal-file-editor');
+      toast('File saved', 'success');
+      cachedFileTree = null;
+      await openFilesTab();
+    }
   } catch (e) {
     toast('Save failed: ' + e, 'error');
     saveBtn.disabled = false; saveBtn.textContent = 'Save';
@@ -925,6 +1045,8 @@ function createNewFile() {
 
 // ─── Inline Settings Tab ──────────────────────────────────────────────────────
 
+const PAPER_SOFTWARES = new Set(['paper', 'purpur', 'folia', 'leaf']);
+
 function openSettingsTab() {
   if (!currentServerId) return;
   const srv = config.servers.find(s => s.id === currentServerId);
@@ -936,6 +1058,8 @@ function openSettingsTab() {
   document.getElementById('tsett-group').value = srv.group || '';
   document.getElementById('tsett-java-args').value = srv.javaArgs || '';
   document.getElementById('tsett-java-path').value = srv.javaPath || 'java';
+  const proxyBtnRow = document.getElementById('tsett-proxy-btn-row');
+  if (proxyBtnRow) proxyBtnRow.classList.toggle('hidden', !PAPER_SOFTWARES.has(srv.software));
 }
 
 async function saveTabSettings() {
@@ -981,6 +1105,87 @@ async function saveTabSettings() {
 async function browseJavaTabSettings() {
   const path = await window.mcpanel.browseJava();
   if (path) document.getElementById('tsett-java-path').value = path;
+}
+
+// ─── Velocity Proxy Link ─────────────────────────────────────────────────────
+
+async function openVelocityLinkModal() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  await loadProxySection(srv);
+  openModal('modal-velocity-link');
+}
+
+async function loadProxySection(srv) {
+  const velocityServers = config.servers.filter(s => s.software === 'velocity');
+  const sel = document.getElementById('tsett-proxy-velocity');
+  if (velocityServers.length === 0) {
+    sel.innerHTML = '<option value="">No Velocity servers found</option>';
+  } else {
+    sel.innerHTML = velocityServers
+      .map(v => `<option value="${v.id}">${escapeHtml(v.name)}</option>`)
+      .join('');
+  }
+
+  const safeName = (srv.name || '').toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_-]/g, '');
+  document.getElementById('tsett-proxy-name').value = safeName;
+  document.getElementById('tsett-proxy-custom-ip-toggle').checked = false;
+  document.getElementById('tsett-proxy-custom-ip-wrap').classList.add('hidden');
+  document.getElementById('tsett-proxy-custom-ip').value = '';
+
+  if (velocityServers.length > 0) await updateProxyPrioritySlider(velocityServers[0].id);
+}
+
+async function onProxyVelocityChange() {
+  const id = document.getElementById('tsett-proxy-velocity').value;
+  if (id) await updateProxyPrioritySlider(id);
+}
+
+async function updateProxyPrioritySlider(velocityId) {
+  try {
+    const info = await window.mcpanel.proxyInfo(velocityId);
+    const tryList = (info && info.tryList) ? info.tryList : [];
+    const slider = document.getElementById('tsett-proxy-priority');
+    const valEl = document.getElementById('tsett-proxy-priority-val');
+    const labelsEl = document.getElementById('tsett-proxy-priority-labels');
+    slider.max = tryList.length;
+    slider.value = tryList.length;
+    valEl.textContent = tryList.length;
+    labelsEl.innerHTML = tryList.length > 0
+      ? tryList.map((n, i) => `<span>${i}: ${escapeHtml(n)}</span>`).join('') + `<span>${tryList.length}: (end)</span>`
+      : '<span style="opacity:0.55">Try list is empty — this will be the first server</span>';
+  } catch { /* ignore */ }
+}
+
+async function linkToVelocityProxy(btn) {
+  const velocityId = document.getElementById('tsett-proxy-velocity').value;
+  const serverName = document.getElementById('tsett-proxy-name').value.trim();
+  const priority = parseInt(document.getElementById('tsett-proxy-priority').value) || 0;
+  const useCustomIp = document.getElementById('tsett-proxy-custom-ip-toggle').checked;
+  const customIp = useCustomIp ? document.getElementById('tsett-proxy-custom-ip').value.trim() : null;
+
+  if (!velocityId) { toast('Please select a Velocity proxy server', 'error'); return; }
+  if (!serverName) { toast('Please enter a server name', 'error'); return; }
+
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = 'Linking…';
+
+  try {
+    const result = await window.mcpanel.linkToProxy(currentServerId, velocityId, serverName, priority, customIp);
+    if (result && result.error) {
+      toast('Link failed: ' + result.error, 'error');
+    } else {
+      toast('Server linked to Velocity proxy!', 'success');
+      closeModal('modal-velocity-link');
+    }
+  } catch (e) {
+    toast('Link failed: ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
 }
 
 // ─── Quick Controls ───────────────────────────────────────────────────────────
@@ -1666,12 +1871,416 @@ async function createServer() {
 }
 
 // ─── Profiles ─────────────────────────────────────────────────────────────────
+// ─── Profile File Browser ─────────────────────────────────────────────────────
+
+let currentProfileId = null;
+let currentProfile = null;
+let profileNavStack = [];
+let profileNavPaths = [];
+let profileCachedFileTree = null;
+let selectedProfileFilePaths = new Set();
+
+function _profileSubtitle(profile) {
+  const sw = profile.software && profile.software.length ? profile.software.map(capitalise).join(', ') : 'Any Software';
+  const ver = profile.versions && profile.versions.length ? profile.versions.join(', ') : 'Any Version';
+  return `${sw} · ${ver}`;
+}
+
+function openProfileDetail(profileId) {
+  const profile = profiles.find(p => p.id === profileId);
+  if (!profile) return;
+  currentProfileId = profileId;
+  currentProfile = profile;
+  profileNavStack = [];
+  profileNavPaths = [];
+  profileCachedFileTree = null;
+  selectedProfileFilePaths.clear();
+
+  document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+  document.getElementById('page-profile-detail').classList.remove('hidden');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  document.getElementById('pd-name').textContent = profile.name;
+  document.getElementById('pd-subtitle').textContent = _profileSubtitle(profile);
+  document.getElementById('pd-id').textContent = profile.id;
+  document.getElementById('pd-created').textContent = profile.created
+    ? new Date(profile.created).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    : '—';
+
+  _renderProfileSidebarTags();
+  switchProfileTab('overview');
+}
+
+function _renderProfileSidebarTags() {
+  const profile = currentProfile;
+  const swEl = document.getElementById('pd-sw-tags');
+  const verEl = document.getElementById('pd-ver-tags');
+  const swList = profile.software && profile.software.length ? profile.software : [];
+  const verList = profile.versions && profile.versions.length ? profile.versions : [];
+  swEl.innerHTML = swList.length
+    ? swList.map(s => `<span class="profile-tag">${escapeHtml(capitalise(s))}</span>`).join('')
+    : `<span style="font-size:12px;color:var(--text-muted)">Any software</span>`;
+  verEl.innerHTML = verList.length
+    ? verList.map(v => `<span class="profile-tag">${escapeHtml(v)}</span>`).join('')
+    : `<span style="font-size:12px;color:var(--text-muted)">Any version</span>`;
+}
+
+function switchProfileTab(name) {
+  ['overview', 'files', 'settings'].forEach(t => {
+    document.getElementById(`ptab-${t}`).classList.toggle('active', t === name);
+    document.getElementById(`pane-profile-${t}`).classList.toggle('hidden', t !== name);
+  });
+  if (name === 'overview') openProfileOverviewTab();
+  if (name === 'files') openProfileFileBrowser();
+  if (name === 'settings') openProfileSettingsTab();
+}
+
+function openProfileOverviewTab() {
+  const using = (config.servers || []).filter(s => s.profileId === currentProfileId);
+  const listEl = document.getElementById('pd-server-list');
+  const descEl = document.getElementById('pd-description');
+
+  if (using.length === 0) {
+    listEl.innerHTML = `<div class="pd-server-empty">No servers are currently using this profile.</div>`;
+  } else {
+    listEl.innerHTML = using.map(srv => `
+      <div class="pd-server-row">
+        <div class="pd-server-info">
+          <span class="pd-server-name">${escapeHtml(srv.name)}</span>
+          <span class="pd-server-meta">${escapeHtml(srv.version)} · ${escapeHtml(capitalise(srv.software))}</span>
+        </div>
+        <button class="btn-xs" onclick="openServerDetail('${srv.id}')">Go to Server</button>
+      </div>
+    `).join('');
+  }
+
+  const desc = currentProfile.description || '';
+  descEl.innerHTML = desc
+    ? `<p class="pd-desc-text">${escapeHtml(desc)}</p>`
+    : `<p class="pd-desc-text" style="color:var(--text-muted)">No description.</p>`;
+}
+
+function openProfileSettingsTab() {
+  const profile = currentProfile;
+  document.getElementById('ps-name').value = profile.name || '';
+  document.getElementById('ps-desc').value = profile.description || '';
+  document.getElementById('ps-versions').value = (profile.versions || []).join(', ');
+  document.querySelectorAll('#ps-software-checks input[type=checkbox]').forEach(cb => {
+    cb.checked = (profile.software || []).includes(cb.value);
+  });
+}
+
+async function saveProfileSettings() {
+  const name = document.getElementById('ps-name').value.trim();
+  if (!name) { toast('Profile name is required', 'error'); return; }
+  const description = document.getElementById('ps-desc').value.trim();
+  const software = [...document.querySelectorAll('#ps-software-checks input:checked')].map(cb => cb.value);
+  const versionsRaw = document.getElementById('ps-versions').value.trim();
+  const versions = versionsRaw ? versionsRaw.split(',').map(v => v.trim()).filter(Boolean) : [];
+
+  try {
+    await window.mcpanel.updateProfile(currentProfileId, { name, description, software, versions });
+    currentProfile = { ...currentProfile, name, description, software, versions };
+    document.getElementById('pd-name').textContent = name;
+    document.getElementById('pd-subtitle').textContent = _profileSubtitle(currentProfile);
+    _renderProfileSidebarTags();
+    profiles = profiles.map(p => p.id === currentProfileId ? currentProfile : p);
+    toast('Profile updated', 'success');
+    switchProfileTab('overview');
+  } catch (e) {
+    toast('Save failed: ' + e, 'error');
+  }
+}
+
+async function deleteCurrentProfile() {
+  if (!confirm(`Delete profile "${currentProfile.name}" and all its files? This cannot be undone.`)) return;
+  const r = await window.mcpanel.deleteProfile(currentProfileId);
+  if (r && r.error) { toast(r.error, 'error'); return; }
+  profiles = profiles.filter(p => p.id !== currentProfileId);
+  toast('Profile deleted', 'info');
+  showPage('profiles');
+}
+
+async function openProfileFileBrowser() {
+  if (!currentProfileId) return;
+  const listEl = document.getElementById('profile-file-list');
+  const savedPaths = [...profileNavPaths];
+  if (!profileCachedFileTree) {
+    listEl.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:12px">Loading…</div>`;
+    const r = await window.mcpanel.getProfileFileTree(currentProfileId);
+    if (r.error) {
+      listEl.innerHTML = `<div style="padding:24px;color:var(--red);font-size:12px">${escapeHtml(r.error)}</div>`;
+      return;
+    }
+    profileCachedFileTree = r.tree || [];
+  }
+  profileNavStack = [profileCachedFileTree];
+  profileNavPaths = [];
+  for (const seg of savedPaths) {
+    const dir = profileNavStack[profileNavStack.length - 1].find(n => n.type === 'dir' && n.name === seg);
+    if (dir) { profileNavStack.push(dir.children || []); profileNavPaths.push(seg); }
+    else break;
+  }
+  renderProfileFileBrowser();
+}
+
+async function reloadProfileFileTree() {
+  profileCachedFileTree = null;
+  await openProfileFileBrowser();
+}
+
+function renderProfileFileBrowser() {
+  const children = profileNavStack[profileNavStack.length - 1];
+  const listEl = document.getElementById('profile-file-list');
+  const bcEl = document.getElementById('profile-file-breadcrumb');
+  const upBtn = document.getElementById('profile-file-up-btn');
+
+  const parts = [currentProfileId, ...profileNavPaths];
+  bcEl.innerHTML = parts.map((seg, i) => {
+    const isCurrent = i === parts.length - 1;
+    return (i > 0 ? `<span class="file-bc-sep">/</span>` : '') +
+      `<span class="file-bc-seg${isCurrent ? ' current' : ''}" data-depth="${i}">${escapeHtml(seg)}</span>`;
+  }).join('');
+  bcEl.querySelectorAll('[data-depth]').forEach(el => {
+    const depth = parseInt(el.dataset.depth);
+    if (depth < parts.length - 1) el.onclick = () => profileFileBrowserGoTo(depth);
+  });
+  upBtn.disabled = profileNavStack.length <= 1;
+
+  listEl.innerHTML = '';
+  const sorted = [...children].sort((a, b) => {
+    if (a.type === b.type) return a.name.localeCompare(b.name);
+    return a.type === 'dir' ? -1 : 1;
+  });
+
+  for (const node of sorted) {
+    const nodePath = [...profileNavPaths, node.name].join('/');
+    const row = document.createElement('div');
+    row.className = `file-row${node.type === 'dir' ? ' is-dir' : ''}${selectedProfileFilePaths.has(nodePath) ? ' selected' : ''}`;
+    row.innerHTML = `
+      <input type="checkbox" class="file-row-check" ${selectedProfileFilePaths.has(nodePath) ? 'checked' : ''}>
+      <div class="file-row-icon">${fileIcon(node.name, node.type)}</div>
+      <span class="file-row-name">${escapeHtml(node.name)}</span>
+      <span class="file-row-size">${node.type === 'dir' ? '' : formatBytes(node.size || 0)}</span>
+      <div class="file-row-actions">
+        <button class="file-action-btn rename-btn" title="Rename">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="file-action-btn delete-btn" title="Delete">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>`;
+
+    row.querySelector('.file-row-check').addEventListener('change', e => {
+      e.stopPropagation();
+      if (e.target.checked) selectedProfileFilePaths.add(nodePath);
+      else selectedProfileFilePaths.delete(nodePath);
+      row.classList.toggle('selected', e.target.checked);
+    });
+    row.querySelector('.file-row-check').addEventListener('click', e => e.stopPropagation());
+    row.querySelector('.rename-btn').addEventListener('click', e => { e.stopPropagation(); renameProfileFileEntry(nodePath, node.name); });
+    row.querySelector('.delete-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      if (selectedProfileFilePaths.size > 1 && selectedProfileFilePaths.has(nodePath))
+        deleteSelectedProfileFiles();
+      else
+        deleteProfileFileEntry(nodePath, node.name, node.type === 'dir');
+    });
+
+    if (node.type === 'dir') {
+      row.ondblclick = () => {
+        profileNavStack.push(node.children || []);
+        profileNavPaths.push(node.name);
+        renderProfileFileBrowser();
+      };
+      row.ondragover = e => { e.preventDefault(); e.stopPropagation(); row.classList.add('drop-target'); };
+      row.ondragleave = () => row.classList.remove('drop-target');
+      row.ondrop = e => {
+        e.preventDefault(); e.stopPropagation();
+        row.classList.remove('drop-target');
+        _handleProfileDrop(e, [...profileNavPaths, node.name].join('/'));
+      };
+    } else {
+      row.ondblclick = () => openFileEditor(nodePath, node.name, { type: 'profile', id: currentProfileId });
+    }
+    listEl.appendChild(row);
+  }
+}
+
+function profileFileBrowserUp() {
+  if (profileNavStack.length > 1) {
+    profileNavStack.pop(); profileNavPaths.pop();
+    renderProfileFileBrowser();
+  }
+}
+
+function profileFileBrowserGoTo(depth) {
+  while (profileNavStack.length > depth + 1) { profileNavStack.pop(); profileNavPaths.pop(); }
+  renderProfileFileBrowser();
+}
+
+function _handleProfileDrop(e, destDir) {
+  const paths = getDroppedPaths(e);
+  if (paths.length) uploadProfileFilesFromPaths(paths, destDir);
+  else uploadProfileFiles(e.dataTransfer.files, destDir);
+}
+
+function profileFilePanelDragOver(e) { e.preventDefault(); }
+function profileFilePanelDrop(e) {
+  e.preventDefault();
+  _handleProfileDrop(e, profileNavPaths.join('/'));
+}
+function profileFileZoneDragOver(e) {
+  e.preventDefault();
+  document.getElementById('profile-file-drop-zone').classList.add('drop-active');
+}
+function profileFileZoneDragLeave(e) {
+  document.getElementById('profile-file-drop-zone').classList.remove('drop-active');
+}
+function profileFileZoneDrop(e) {
+  e.preventDefault();
+  document.getElementById('profile-file-drop-zone').classList.remove('drop-active');
+  _handleProfileDrop(e, profileNavPaths.join('/'));
+}
+
+function handleProfileFileInputChange(e) {
+  uploadProfileFiles(e.target.files, profileNavPaths.join('/'));
+  e.target.value = '';
+}
+
+async function uploadProfileFiles(fileList, dirPath) {
+  if (!fileList || fileList.length === 0 || !currentProfileId) return;
+  const files = Array.from(fileList);
+  const total = files.length;
+  const progressEl = document.getElementById('profile-file-upload-progress');
+  const fillEl = document.getElementById('profile-file-upload-progress-fill');
+  const textEl = document.getElementById('profile-file-upload-progress-text');
+  const dropZone = document.getElementById('profile-file-drop-zone');
+  progressEl.classList.remove('hidden');
+  dropZone.style.pointerEvents = 'none';
+  let done = 0, errors = 0;
+  for (const file of files) {
+    fillEl.style.width = `${Math.round((done / total) * 100)}%`;
+    textEl.textContent = `Uploading ${file.name} (${done + 1}/${total})`;
+    try {
+      const buf = await file.arrayBuffer();
+      const data = Array.from(new Uint8Array(buf));
+      const rel = dirPath ? `${dirPath}/${file.name}` : file.name;
+      await window.mcpanel.writeProfileFile(currentProfileId, rel, data);
+      done++;
+    } catch (e) {
+      errors++;
+      toast(`Failed to upload ${file.name}: ${e}`, 'error');
+    }
+  }
+  fillEl.style.width = '100%';
+  if (errors === 0) {
+    textEl.textContent = `Done — ${done} file${done > 1 ? 's' : ''} uploaded`;
+    toast(`Uploaded ${done} file${done > 1 ? 's' : ''}`, 'success');
+  } else {
+    textEl.textContent = `${done} uploaded, ${errors} failed`;
+  }
+  dropZone.style.pointerEvents = '';
+  setTimeout(() => { progressEl.classList.add('hidden'); fillEl.style.width = '0%'; }, 3000);
+  if (done > 0) { profileCachedFileTree = null; await openProfileFileBrowser(); }
+}
+
+async function uploadProfileFilesFromPaths(paths, destDir) {
+  if (!paths.length || !currentProfileId) return;
+  const progressEl = document.getElementById('profile-file-upload-progress');
+  const fillEl = document.getElementById('profile-file-upload-progress-fill');
+  const textEl = document.getElementById('profile-file-upload-progress-text');
+  progressEl.classList.remove('hidden');
+  textEl.textContent = `Copying ${paths.length} file${paths.length > 1 ? 's' : ''}…`;
+  try {
+    await window.mcpanel.uploadFilesToProfile(currentProfileId, paths, destDir);
+    fillEl.style.width = '100%';
+    textEl.textContent = `Done — ${paths.length} file${paths.length > 1 ? 's' : ''} copied`;
+    toast(`Copied ${paths.length} file${paths.length > 1 ? 's' : ''}`, 'success');
+  } catch (e) {
+    toast('Upload failed: ' + e, 'error');
+    fillEl.style.width = '0%';
+  }
+  setTimeout(() => { progressEl.classList.add('hidden'); fillEl.style.width = '0%'; }, 3000);
+  profileCachedFileTree = null;
+  await openProfileFileBrowser();
+}
+
+async function deleteProfileFileEntry(relPath, name, isDir) {
+  const msg = isDir ? `Delete folder "${name}" and all its contents?` : `Delete file "${name}"?`;
+  if (!confirm(msg)) return;
+  try {
+    await window.mcpanel.deleteProfileFile(currentProfileId, relPath);
+    toast(`Deleted "${name}"`, 'info');
+    profileCachedFileTree = null;
+    await openProfileFileBrowser();
+  } catch (e) { toast('Delete failed: ' + e, 'error'); }
+}
+
+async function deleteSelectedProfileFiles() {
+  const count = selectedProfileFilePaths.size;
+  if (!confirm(`Delete ${count} selected item${count !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  const paths = [...selectedProfileFilePaths];
+  let failed = 0;
+  for (const p of paths) {
+    try { await window.mcpanel.deleteProfileFile(currentProfileId, p); }
+    catch { failed++; }
+  }
+  selectedProfileFilePaths.clear();
+  if (failed === 0) toast(`Deleted ${paths.length} item${paths.length !== 1 ? 's' : ''}`, 'info');
+  else toast(`Deleted ${paths.length - failed}, failed ${failed}`, 'error');
+  profileCachedFileTree = null;
+  await openProfileFileBrowser();
+}
+
+function renameProfileFileEntry(relPath, name) {
+  openFileInput('Rename', 'New name', name, async (newName) => {
+    if (newName === name) return;
+    const parts = relPath.split('/');
+    parts[parts.length - 1] = newName;
+    try {
+      await window.mcpanel.renameProfileFile(currentProfileId, relPath, parts.join('/'));
+      toast(`Renamed to "${newName}"`, 'success');
+      profileCachedFileTree = null;
+      await openProfileFileBrowser();
+    } catch (e) { toast('Rename failed: ' + e, 'error'); }
+  });
+}
+
+function createNewProfileFolder() {
+  if (!currentProfileId) return;
+  openFileInput('New Folder', 'Folder name', '', async (name) => {
+    const relPath = profileNavPaths.length ? profileNavPaths.join('/') + '/' + name : name;
+    try {
+      await window.mcpanel.createProfileDir(currentProfileId, relPath);
+      toast(`Folder "${name}" created`, 'success');
+      profileCachedFileTree = null;
+      await openProfileFileBrowser();
+    } catch (e) { toast('Create failed: ' + e, 'error'); }
+  });
+}
+
+function createNewProfileFile() {
+  if (!currentProfileId) return;
+  openFileInput('New File', 'File name', '', async (name) => {
+    const relPath = profileNavPaths.length ? profileNavPaths.join('/') + '/' + name : name;
+    try {
+      await window.mcpanel.createProfileFile(currentProfileId, relPath);
+      toast(`File "${name}" created`, 'success');
+      profileCachedFileTree = null;
+      await openProfileFileBrowser();
+    } catch (e) { toast('Create failed: ' + e, 'error'); }
+  });
+}
+
+// ─── Profiles Grid ────────────────────────────────────────────────────────────
+
 function renderProfilesGrid() {
   window.mcpanel.getProfiles().then(p => {
     profiles = p;
     const grid = document.getElementById('profiles-grid');
     const empty = document.getElementById('profiles-empty');
-    grid.querySelectorAll('.profile-card').forEach(c => c.remove());
+    grid.querySelectorAll('.server-card.profile-card').forEach(c => c.remove());
     if (p.length === 0) {
       if (empty) empty.classList.remove('hidden');
       return;
@@ -1683,25 +2292,59 @@ function renderProfilesGrid() {
 
 function createProfileCard(profile) {
   const card = document.createElement('div');
-  card.className = 'profile-card';
-  const tags = [
-    ...(profile.software.length > 0 ? profile.software.map(s => capitalise(s)) : ['Any Software']),
-    ...(profile.versions.length > 0 ? profile.versions : ['Any Version']),
-  ];
+  card.className = 'server-card profile-card';
+  card.id = `pcard-${profile.id}`;
+
+  const swList = profile.software || [];
+  const verList = profile.versions || [];
+  const usingCount = (config.servers || []).filter(s => s.profileId === profile.id).length;
+
+  const swDisplay = swList.length === 0
+    ? 'Any'
+    : swList.length <= 2
+      ? swList.map(capitalise).join(', ')
+      : `${swList.slice(0, 2).map(capitalise).join(', ')} +${swList.length - 2}`;
+
+  const verDisplay = verList.length === 0
+    ? 'Any'
+    : verList.length <= 2
+      ? verList.join(', ')
+      : `${verList.slice(0, 2).join(', ')} +${verList.length - 2}`;
+
+  const sub = profile.description
+    ? escapeHtml(profile.description)
+    : '<span style="color:var(--text-muted)">No description</span>';
+
   card.innerHTML = `
-    <div class="profile-card-name">${escapeHtml(profile.name)}</div>
-    <div class="profile-card-desc">${escapeHtml(profile.description || 'No description')}</div>
-    <div class="profile-tags">
-      ${tags.map(t => `<span class="profile-tag">${escapeHtml(t)}</span>`).join('')}
+    <div class="server-card-header">
+      <div>
+        <div class="server-card-name">${escapeHtml(profile.name)}</div>
+        <div class="server-card-sub">${sub}</div>
+      </div>
+      <div class="profile-server-count">${usingCount} server${usingCount !== 1 ? 's' : ''}</div>
     </div>
-    <div class="profile-actions">
-      <button class="btn-sm" onclick="window.mcpanel.openProfileFolder('${profile.id}')">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        Open Folder
-      </button>
-      <button class="btn-sm" style="color:var(--red);border-color:rgba(239,68,68,0.3)" onclick="deleteProfile('${profile.id}')">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
-        Delete
+    <div class="server-card-stats">
+      <div class="stat-chip">
+        <div class="stat-chip-label">Software</div>
+        <div class="stat-chip-value">${escapeHtml(swDisplay)}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Versions</div>
+        <div class="stat-chip-value">${escapeHtml(verDisplay)}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Used By</div>
+        <div class="stat-chip-value">${usingCount} server${usingCount !== 1 ? 's' : ''}</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-chip-label">Created</div>
+        <div class="stat-chip-value">${profile.created ? new Date(profile.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }) : '—'}</div>
+      </div>
+    </div>
+    <div class="server-card-footer">
+      <button class="btn-ghost" style="font-size:12px;padding:6px 12px" onclick="openProfileDetail('${profile.id}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        Manage
       </button>
     </div>
   `;
@@ -2116,7 +2759,7 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
     if (e.target === overlay) {
       const id = overlay.id;
-      if (id !== 'modal-download') closeModal(id);
+      if (id !== 'modal-download' && id !== 'modal-cli-missing') closeModal(id);
     }
   });
 });
@@ -2156,20 +2799,7 @@ let installedThemes = [];
 const BUILTIN_THEMES = ['purple-dark', 'clean-dark', 'dark-slate', 'bright-slate'];
 
 async function ensureBuiltinThemes() {
-  for (const id of BUILTIN_THEMES) {
-    const exists = await window.mcpanel.themeExists(id);
-    if (!exists) {
-      try {
-        const [css, json] = await Promise.all([
-          fetch(`/themes/${id}/theme.css`).then(r => r.text()),
-          fetch(`/themes/${id}/theme.json`).then(r => r.text()),
-        ]);
-        await window.mcpanel.installBuiltinTheme(id, css, json);
-      } catch (e) {
-        console.warn(`Failed to install builtin theme ${id}:`, e);
-      }
-    }
-  }
+  await window.mcpanel.ensureBuiltinThemes();
 }
 
 async function loadAndApplyTheme(id) {
@@ -2487,4 +3117,23 @@ async function copyVelocitySecret() {
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-init();
+window._cliReady.then(ok => {
+  if (ok) {
+    init();
+  } else {
+    // CLI missing: skip full init, but still apply the default theme so the
+    // app isn't unstyled behind the "CLI not found" modal. Theme handling is
+    // entirely Rust-native and doesn't touch the CLI.
+    applyDefaultThemeNoCli();
+  }
+});
+
+async function applyDefaultThemeNoCli() {
+  try {
+    await ensureBuiltinThemes();
+    const defaultThemeId = await window.mcpanel.getDefaultTheme();
+    await loadAndApplyTheme(defaultThemeId);
+  } catch (e) {
+    console.error('Failed to apply default theme without CLI:', e);
+  }
+}
