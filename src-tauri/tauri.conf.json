@@ -51,7 +51,7 @@
         "fragmentPaths": ["wix-cli-install.wxs"]
       },
       "nsis": {
-        "hooks": "../scripts/win-install-nsis.nsh"
+        "installerHooks": "../scripts/win-install-nsis.nsh"
       }
     }
   }
