@@ -106,11 +106,128 @@ fn windows_python_scripts_paths() -> String {
     paths.join(";")
 }
 
+// Locate the mcpanel-cli executable by checking the filesystem locations where
+// `pip --user` / `pipx` install it on each OS — WITHOUT executing anything.
+//
+// This is the fix for the "1000 windows" fork bomb: on Linux/macOS this GUI
+// binary is itself named `mcpanel`, so spawning a bare `mcpanel` from PATH can
+// launch another copy of the GUI instead of the Python CLI. Each new GUI re-runs
+// the CLI check on startup, which spawns another GUI… → unbounded recursion.
+//
+// By resolving an ABSOLUTE path to the Python console-script — and explicitly
+// skipping our own executable (current_exe) — it becomes impossible to ever
+// accidentally launch the GUI as if it were the CLI. User-install locations are
+// checked first so a pip/pipx install always wins over anything in /usr/bin.
+fn find_cli_path() -> Option<std::path::PathBuf> {
+    let exe = if cfg!(windows) { "mcpanel.exe" } else { "mcpanel" };
+    let self_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
+        // pip --user installs to %APPDATA%\Python\Python3XX\Scripts (newest first).
+        for minor in (8u32..=14).rev() {
+            if !appdata.is_empty() {
+                candidates.push(format!("{}\\Python\\Python3{}\\Scripts\\{}", appdata, minor, exe).into());
+            }
+            if !localappdata.is_empty() {
+                candidates.push(format!("{}\\Programs\\Python\\Python3{}\\Scripts\\{}", localappdata, minor, exe).into());
+            }
+        }
+        if !userprofile.is_empty() {
+            candidates.push(format!("{}\\.local\\bin\\{}", userprofile, exe).into()); // pipx
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            candidates.push(format!("{}/.local/bin/{}", home, exe).into());      // pip --user (Linux)
+            candidates.push(format!("{}/.local/pipx/bin/{}", home, exe).into()); // pipx
+            // pip --user on macOS lands in ~/Library/Python/3.x/bin.
+            #[cfg(target_os = "macos")]
+            for minor in (8u32..=14).rev() {
+                candidates.push(format!("{}/Library/Python/3.{}/bin/{}", home, minor, exe).into());
+            }
+        }
+        candidates.push(format!("/usr/local/bin/{}", exe).into());
+        #[cfg(target_os = "macos")]
+        candidates.push(format!("/opt/homebrew/bin/{}", exe).into()); // Homebrew (Apple Silicon)
+        candidates.push(format!("/usr/bin/{}", exe).into());
+    }
+
+    for cand in candidates {
+        if !cand.is_file() {
+            continue;
+        }
+        // Never return our own GUI binary — resolving symlinks first so a
+        // `mcpanel` symlink pointing at the GUI is also caught.
+        if let Some(ref me) = self_exe {
+            if std::fs::canonicalize(&cand).ok().as_ref() == Some(me) {
+                continue;
+            }
+        }
+        // CRITICAL: a system .deb/.rpm install puts the *GUI* binary in /usr/bin
+        // (and other shared dirs), so a matching path is NOT proof we found the
+        // CLI. On Unix, positively confirm the candidate is the Python console
+        // script (text file with a `#!…python` shebang) and not a compiled ELF/
+        // Mach-O binary. Spawning a GUI here is exactly the fork bomb, so any
+        // non-CLI candidate must be rejected.
+        #[cfg(not(windows))]
+        if !looks_like_python_cli(&cand) {
+            continue;
+        }
+        return Some(cand);
+    }
+    None
+}
+
+// True only if `path` is a Python console-script: a small text file whose first
+// line is a `#!` shebang invoking python. Compiled GUI binaries (ELF on Linux,
+// Mach-O on macOS) are rejected, which is what stops us ever launching the GUI
+// as if it were the CLI. Windows pip launchers are `.exe` files in pip-only
+// Scripts dirs the GUI never installs to, so this check is Unix-only.
+#[cfg(not(windows))]
+fn looks_like_python_cli(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = [0u8; 128];
+    let n = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    let head = &buf[..n];
+    if !head.starts_with(b"#!") {
+        return false; // ELF/Mach-O and anything non-script falls out here
+    }
+    let first_line = head.split(|&b| b == b'\n').next().unwrap_or(head);
+    String::from_utf8_lossy(first_line).to_lowercase().contains("python")
+}
+
+// Program to invoke for the CLI: the resolved absolute path when found, else a
+// bare "mcpanel" fallback (only reached when callers have already confirmed the
+// CLI exists, so this never reintroduces the fork bomb in practice).
+fn cli_program() -> std::ffi::OsString {
+    find_cli_path()
+        .map(|p| p.into_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("mcpanel"))
+}
+
 // AppImage launchers and some desktop environments strip ~/.local/bin from PATH.
 // These helpers prepend the common user-install locations so `mcpanel` (installed
 // via pip --user or pipx) is always found regardless of how the app was launched.
 fn mcpanel_cmd() -> std::process::Command {
-    let mut cmd = std::process::Command::new("mcpanel");
+    let mut cmd = std::process::Command::new(cli_program());
     #[cfg(not(windows))]
     {
         let home = std::env::var("HOME").unwrap_or_default();
@@ -138,7 +255,7 @@ fn mcpanel_cmd() -> std::process::Command {
 }
 
 fn mcpanel_async_cmd() -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("mcpanel");
+    let mut cmd = tokio::process::Command::new(cli_program());
     #[cfg(not(windows))]
     {
         let home = std::env::var("HOME").unwrap_or_default();
@@ -161,34 +278,51 @@ fn mcpanel_async_cmd() -> tokio::process::Command {
 }
 
 #[tauri::command]
-pub fn check_cli() -> Value {
-    match mcpanel_cmd()
+pub async fn check_cli() -> Value {
+    use tokio::time::{timeout, Duration};
+
+    // STEP 1 — existence check ONLY, no process spawned. Detect the CLI by
+    // finding its file at a known pip/pipx install location. We deliberately do
+    // NOT run a bare `mcpanel` to probe for it: on systems where this GUI binary
+    // is named `mcpanel`, that probe would open another window (and so on — the
+    // "1000 windows" fork bomb). If nothing is on disk, report not-installed
+    // without launching anything at all.
+    let cli_path = match find_cli_path() {
+        Some(p) => p,
+        None => {
+            return serde_json::json!({
+                "ok": false,
+                "error": "mcpanel CLI not found. Install it from https://github.com/DippyCoder/mcpanel-cli"
+            });
+        }
+    };
+    log_to_file(&format!("check_cli: found CLI at {}", cli_path.display()));
+
+    // STEP 2 — the CLI exists, so detection already succeeded (ok:true). Reading
+    // the version is best-effort enrichment for the UI. Because we exec the
+    // resolved absolute path (never our own exe, never a bare PATH lookup), this
+    // can't hit the GUI; timeout + kill_on_drop guard against a hung process.
+    let mut result = serde_json::json!({ "ok": true });
+
+    if let Ok(child) = mcpanel_async_cmd()
         .args(["api", "version"])
-        .output()
+        .kill_on_drop(true)
+        .spawn()
     {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let version = serde_json::from_str::<Value>(&stdout)
-                .ok()
-                .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
-            let mut result = serde_json::json!({"ok": true});
-            if let Some(v) = version {
-                result["version"] = Value::String(v);
+        if let Ok(Ok(out)) = timeout(Duration::from_secs(3), child.wait_with_output()).await {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Some(v) = serde_json::from_str::<Value>(&stdout)
+                    .ok()
+                    .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+                {
+                    result["version"] = Value::String(v);
+                }
             }
-            result
         }
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            serde_json::json!({"ok": false, "error": err})
-        }
-        Err(e) => serde_json::json!({
-            "ok": false,
-            "error": format!(
-                "mcpanel CLI not found.\nInstall it with:  pip3 install --user https://github.com/DippyCoder/mcpanel-cli/archive/refs/heads/main.zip\n({})",
-                e
-            )
-        }),
     }
+
+    result
 }
 
 #[tauri::command]

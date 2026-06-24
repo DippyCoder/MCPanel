@@ -1003,6 +1003,8 @@ body {
   display: flex; align-items: center; justify-content: center;
   animation: fadeIn .15s ease;
 }
+/* backdrop-filter crashes WebKit2GTK on Linux (WEBKIT_DISABLE_COMPOSITING_MODE=1) */
+.linux .modal-overlay { backdrop-filter: none; }
 .modal-overlay.hidden { display: none; }
 .modal {
   background: var(--bg-surface);
@@ -1015,6 +1017,14 @@ body {
 }
 .modal.large { width: 680px; }
 .modal.small { width: 420px; }
+.modal.danger {
+  background: var(--toast-error-bg);
+  border: 1px solid var(--toast-error-border);
+  box-shadow: 0 20px 80px rgba(0,0,0,0.85), 0 0 0 1px var(--toast-error-border), 0 0 40px var(--toast-error-border);
+}
+.modal.danger .first-start-title { color: var(--toast-error-text); }
+.modal.danger .first-start-sub { color: var(--toast-error-text); }
+.modal.danger .first-start-footer { border-top-color: var(--toast-error-border); }
 .file-editor-modal { height: 78vh; max-height: 78vh; }
 .file-editor-body { display: flex; flex-direction: column; padding: 14px 16px; min-height: 0; }
 .file-editor-ace {

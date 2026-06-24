@@ -54,16 +54,17 @@
 
 <!-- CLI missing modal (shown on startup when CLI cannot be loaded) -->
 <div class="modal-overlay hidden" id="modal-cli-missing">
-  <div class="modal" style="width:480px;text-align:center;padding:0">
+  <div class="modal danger" style="width:480px;text-align:center;padding:0">
     <div style="padding:40px 40px 32px">
       <div class="first-start-logo">
-        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" style="background:var(--bg-elevated);border-radius:14px;padding:12px;box-sizing:border-box"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" style="background:var(--toast-error-border);border-radius:14px;padding:12px;box-sizing:border-box"><line x1="12" y1="7" x2="12" y2="13"/><line x1="12" y1="17" x2="12" y2="17"/></svg>
       </div>
-      <h2 class="first-start-title">MCPanel-CLI Could Not Be Loaded</h2>
+      <h2 class="var(--toast-error-text)">MCPanel-CLI Could Not Be Loaded</h2>
       <p class="first-start-sub">MCPanel-CLI is not installed or could not be initialized. Most features require the CLI to function.</p>
+      <p class="first-start-sub">Please check your paths and check if MCPanel-CLI is properly installed.</p>
     </div>
     <div class="first-start-footer" style="display:flex;gap:10px">
-      <button class="btn-ghost" style="flex:1;justify-content:center" onclick="closeModal('modal-cli-missing')">Dismiss</button>
+      <button class="btn-ghost" style="flex:1;justify-content:center" onclick="window.mcpanel.openExternal('https://github.com/DippyCoder/MCPanel/issues')">Report an Issue</button>
       <button class="btn-primary" style="flex:1;justify-content:center" onclick="window.mcpanel.openExternal(window._cliDownloadUrl())">Download MCPanel-CLI</button>
     </div>
   </div>

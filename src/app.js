@@ -2759,7 +2759,7 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
     if (e.target === overlay) {
       const id = overlay.id;
-      if (id !== 'modal-download') closeModal(id);
+      if (id !== 'modal-download' && id !== 'modal-cli-missing') closeModal(id);
     }
   });
 });
@@ -3117,4 +3117,23 @@ async function copyVelocitySecret() {
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-init();
+window._cliReady.then(ok => {
+  if (ok) {
+    init();
+  } else {
+    // CLI missing: skip full init, but still apply the default theme so the
+    // app isn't unstyled behind the "CLI not found" modal. Theme handling is
+    // entirely Rust-native and doesn't touch the CLI.
+    applyDefaultThemeNoCli();
+  }
+});
+
+async function applyDefaultThemeNoCli() {
+  try {
+    await ensureBuiltinThemes();
+    const defaultThemeId = await window.mcpanel.getDefaultTheme();
+    await loadAndApplyTheme(defaultThemeId);
+  } catch (e) {
+    console.error('Failed to apply default theme without CLI:', e);
+  }
+}

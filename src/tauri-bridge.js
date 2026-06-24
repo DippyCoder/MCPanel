@@ -5,13 +5,29 @@
    ═══════════════════════════════════════════════════════ */
 
 (function () {
+  // backdrop-filter: blur() crashes WebKit2GTK on Linux when compositing is
+  // disabled (WEBKIT_DISABLE_COMPOSITING_MODE=1, needed to avoid Wayland EPROTO).
+  // Add a class so CSS can skip it on Linux.
+  if (/Linux/.test(navigator.platform)) {
+    document.documentElement.classList.add('linux');
+  }
+
   // Tauri v2 with withGlobalTauri:true exposes window.__TAURI_INTERNALS__
   const _invoke = (...a) => window.__TAURI_INTERNALS__.invoke(...a);
   // In Tauri v2, listen is on window.__TAURI__.event, not __TAURI_INTERNALS__
   const _listen = (...a) => window.__TAURI__.event.listen(...a);
 
+  // Resolves true/false after the startup CLI check completes.
+  // app.js waits on this before calling init() so no CLI subprocess is ever
+  // spawned until we confirm the real CLI tool is present (not the GUI binary).
+  let _cliReadyResolve;
+  window._cliReady = new Promise(resolve => { _cliReadyResolve = resolve; });
+
   // ─── CLI helper ─────────────────────────────────────────────────────────────
   async function cli(args) {
+    // Block until check is done AND it passed. This prevents run_cli from
+    // spawning subprocesses before we know mcpanel resolves to the CLI tool.
+    if (window._cliOk !== true) throw new Error('MCPanel-CLI is not available');
     const raw = await _invoke('run_cli', { args });
     return JSON.parse(raw);
   }
@@ -399,16 +415,19 @@
     _invoke('check_cli').then(result => {
       if (result && result.ok) {
         window._cliOk = true;
+        _cliReadyResolve(true);
         setTimeout(() => {
           if (typeof window.toast === 'function')
             window.toast(`MCPanel-CLI v${result.version || '?'} ready`, 'success');
         }, 600);
       } else {
         window._cliOk = false;
+        _cliReadyResolve(false);
         showCliMissingModal();
       }
     }).catch(() => {
       window._cliOk = false;
+      _cliReadyResolve(false);
       showCliMissingModal();
     });
   });
