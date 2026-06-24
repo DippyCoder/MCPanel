@@ -2,17 +2,20 @@
 <!--
   WiX fragment: install mcpanel-cli after MSI installation.
   win-install-cli.ps1 is bundled as a resource (bundle.resources in tauri.conf.json)
-  and lands in INSTALLDIR before this CA runs (scheduled After="InstallFiles").
+  and placed in INSTALLDIR before this CA runs (scheduled After="InstallFiles").
   MSI runs elevated so the script can write to the machine PATH (HKLM).
+
+  Execute="immediate" is used so [INSTALLDIR] resolves directly in ExeCommand
+  without needing a SetProperty/CustomActionData pass-through.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
     <CustomAction
       Id="InstallMCPanelCLI"
       Directory="INSTALLDIR"
-      Execute="deferred"
+      Execute="immediate"
       Return="ignore"
-      ExeCommand="powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File win-install-cli.ps1"
+      ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]win-install-cli.ps1&quot;"
     />
     <InstallExecuteSequence>
       <Custom Action="InstallMCPanelCLI" After="InstallFiles">NOT REMOVE</Custom>
