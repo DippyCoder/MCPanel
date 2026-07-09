@@ -20,11 +20,13 @@ let consoleLogOffset = 0;
 let consolePollInterval = null;
 let detailStatsInterval = null;
 let selectedFilePaths = new Set();
+let serverPlayerData = {};
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   config = await window.mcpanel.getConfig();
   window.mcpanel.getSystemInfo().then(info => { systemInfo = info; });
+  loadAppSettings();
 
   // Ensure built-in themes are installed to user themes dir
   await ensureBuiltinThemes();
@@ -59,6 +61,7 @@ async function init() {
   setupConsoleScroll();
 
   updateSidebarStats();
+  updateServersPageStats();
   if (sidebarStatsInterval) clearInterval(sidebarStatsInterval);
   sidebarStatsInterval = setInterval(updateSidebarStats, 5000);
 
@@ -87,6 +90,10 @@ async function init() {
   // Silent update checks on startup — populate status and toast if update found
   window.mcpanel.checkUpdate().then(result => applyUpdateResult(result));
   window.mcpanel.checkCliUpdate().then(result => applyCliUpdateResult(result));
+  window.mcpanel.getBuildToolsVersion().then(result => {
+    applyBuildToolsResult(result);
+    if (result && result.version !== 'installed') showBuildToolsMissingModal();
+  }).catch(() => {});
   checkPrivacyPolicy();
 
   // File drag-drop + close notification via the Tauri window handle
@@ -122,13 +129,38 @@ async function init() {
   }
 }
 
-// ─── Window Close ────────────────────────────────────────────────────────────
-function requestClose() {
+// ─── App Settings ─────────────────────────────────────────────────────────────
+let _appSettings = { runInBackground: true, fonts: { display: 'Poppins', displayWeight: '400', mono: 'JetBrains Mono', monoWeight: '400' } };
+
+async function loadAppSettings() {
+  try {
+    _appSettings = await window.mcpanel.getAppSettings();
+  } catch (e) {
+    // defaults already set
+  }
+  const el = document.getElementById('setting-run-in-bg');
+  if (el) el.checked = _appSettings.runInBackground !== false;
+  applyFontSettings(_appSettings.fonts || {});
+  _syncFontSelects(_appSettings.fonts || {});
+  populateFontLists(_appSettings.fonts || {});
+}
+
+async function saveRunInBackground() {
+  _appSettings.runInBackground = document.getElementById('setting-run-in-bg').checked;
+  await window.mcpanel.saveAppSettings(_appSettings);
+}
+
+// ─── Window Close ─────────────────────────────────────────────────────────────
+async function requestClose() {
   const runningIds = Object.keys(serverStartTimes);
-  if (runningIds.length > 0) {
+  const runInBg = _appSettings.runInBackground !== false;
+  if (!runInBg && runningIds.length > 0) {
     const n = runningIds.length;
-    const msg = `${n} server${n !== 1 ? 's are' : ' is'} still running in the background and will continue after MCPanel closes.\n\nClose MCPanel anyway?`;
-    if (!confirm(msg)) return;
+    if (!confirm(`Stop ${n} server${n !== 1 ? 's' : ''} before closing MCPanel?`)) return;
+    await window.mcpanel.shutdownAllServers();
+  } else if (runInBg && runningIds.length > 0) {
+    const n = runningIds.length;
+    if (!confirm(`${n} server${n !== 1 ? 's are' : ' is'} still running and will continue after MCPanel closes.\n\nClose anyway?`)) return;
   }
   window.mcpanel.close();
 }
@@ -151,6 +183,10 @@ function showPage(page) {
 function openServerDetail(id) {
   currentServerId = id;
   cachedFileTree = null; fileNavStack = []; fileNavPaths = []; selectedFilePaths = new Set();
+  const _pluginListEl = document.getElementById('server-plugin-list');
+  if (_pluginListEl) _pluginListEl.innerHTML = `<div class="plugin-state-msg">Search for plugins or mods to install them.</div>`;
+  const _pluginSearchEl = document.getElementById('server-plugin-search');
+  if (_pluginSearchEl) _pluginSearchEl.value = '';
   switchDetailTab('console');
   const srv = config.servers.find(s => s.id === id);
   if (!srv) return;
@@ -167,13 +203,14 @@ function openServerDetail(id) {
   document.getElementById('detail-server-name').textContent = srv.name;
   document.getElementById('detail-server-subtitle').textContent =
     `${srv.version} · ${capitalise(srv.software)} · Port ${srv.port}`;
+  document.getElementById('dtab-plugins-label').textContent = _pluginTabLabel(srv.software);
   document.getElementById('detail-port').textContent = srv.port;
   setRamBar(0, srv.ram);
 
   // Quick settings
   document.getElementById('quick-port').value = srv.port;
   document.getElementById('quick-java-args').value = srv.javaArgs || '';
-  document.getElementById('quick-java-path').value = srv.javaPath || 'java';
+  populateJdkSelect('quick', 'quick-java-path', srv.javaPath || 'java');
   document.getElementById('quick-group').value = srv.group || '';
 
   // Show Velocity-specific options only for Velocity servers
@@ -233,9 +270,10 @@ async function refreshDetailStats(id) {
 
 // ─── Servers Grid ─────────────────────────────────────────────────────────────
 function renderServersGrid() {
+  const query = (document.getElementById('servers-search')?.value || '').trim().toLowerCase();
   const grid = document.getElementById('servers-grid');
   const empty = document.getElementById('servers-empty');
-  grid.querySelectorAll('.server-card, .group-header').forEach(c => c.remove());
+  grid.querySelectorAll('.server-card, .group-header, .grid-no-results').forEach(c => c.remove());
 
   if (config.servers.length === 0) {
     if (empty) empty.classList.remove('hidden');
@@ -243,15 +281,37 @@ function renderServersGrid() {
   }
   if (empty) empty.classList.add('hidden');
 
-  const hasGroups = config.servers.some(s => s.group);
+  const servers = query
+    ? config.servers.filter(s =>
+        s.name.toLowerCase().includes(query) ||
+        (s.group || '').toLowerCase().includes(query) ||
+        s.software.toLowerCase().includes(query) ||
+        s.version.toLowerCase().includes(query)
+      )
+    : config.servers;
+
+  if (servers.length === 0) {
+    const msg = document.createElement('div');
+    msg.className = 'grid-no-results';
+    msg.textContent = `No servers matching "${query}"`;
+    grid.appendChild(msg);
+    return;
+  }
+
+  if (query) {
+    servers.forEach(srv => grid.appendChild(createServerCard(srv)));
+    return;
+  }
+
+  const hasGroups = servers.some(s => s.group);
   if (!hasGroups) {
-    config.servers.forEach(srv => grid.appendChild(createServerCard(srv)));
+    servers.forEach(srv => grid.appendChild(createServerCard(srv)));
     return;
   }
 
   const groups = {};
   const ungrouped = [];
-  config.servers.forEach(srv => {
+  servers.forEach(srv => {
     if (srv.group) {
       if (!groups[srv.group]) groups[srv.group] = [];
       groups[srv.group].push(srv);
@@ -260,12 +320,12 @@ function renderServersGrid() {
     }
   });
 
-  Object.entries(groups).forEach(([groupName, servers]) => {
+  Object.entries(groups).forEach(([groupName, srvs]) => {
     const header = document.createElement('div');
     header.className = 'group-header';
-    header.innerHTML = `<span class="group-name">${escapeHtml(groupName)}</span><span class="group-count">${servers.length} server${servers.length !== 1 ? 's' : ''}</span>`;
+    header.innerHTML = `<span class="group-name">${escapeHtml(groupName)}</span><span class="group-count">${srvs.length} server${srvs.length !== 1 ? 's' : ''}</span>`;
     grid.appendChild(header);
-    servers.forEach(srv => grid.appendChild(createServerCard(srv)));
+    srvs.forEach(srv => grid.appendChild(createServerCard(srv)));
   });
 
   if (ungrouped.length > 0) {
@@ -460,6 +520,7 @@ async function pollAllStatuses() {
           serverStartTimes[srv.id] = t || Date.now();
         }
         startingServers.delete(srv.id);
+        serverPlayerData[srv.id] = { players: status.players || 0, maxPlayers: status.maxPlayers || 0, isVelocity: srv.software === 'velocity' };
         updateServerCardStatus(srv.id, true, status.players || 0);
         updateSidebarDot(srv.id, true);
         if (currentServerId === srv.id) {
@@ -473,6 +534,7 @@ async function pollAllStatuses() {
       }
     } else {
       startingServers.delete(srv.id);
+      delete serverPlayerData[srv.id];
       if (serverStartTimes[srv.id]) {
         delete serverStartTimes[srv.id];
         const uptimeEl = document.getElementById(`uptime-${srv.id}`);
@@ -491,6 +553,7 @@ async function pollAllStatuses() {
       }
     }
   }
+  updateServersPageStats();
 }
 
 // ─── EULA Flow ────────────────────────────────────────────────────────────────
@@ -562,12 +625,15 @@ function updateDetailStarting() {
 // ─── Detail Tabs ─────────────────────────────────────────────────────────────
 
 function switchDetailTab(name) {
-  ['console', 'files', 'settings'].forEach(t => {
+  ['console', 'files', 'plugins', 'settings', 'backups', 'schedule'].forEach(t => {
     document.getElementById(`dtab-${t}`).classList.toggle('active', t === name);
     document.getElementById(`pane-${t}`).classList.toggle('hidden', t !== name);
   });
   if (name === 'files') openFilesTab();
   if (name === 'settings') openSettingsTab();
+  if (name === 'plugins') openServerPluginsTab();
+  if (name === 'backups') openBackupsTab();
+  if (name === 'schedule') openScheduleTab();
 }
 
 // ─── File Browser ─────────────────────────────────────────────────────────────
@@ -1057,7 +1123,7 @@ function openSettingsTab() {
   document.getElementById('tsett-port').value = srv.port || '';
   document.getElementById('tsett-group').value = srv.group || '';
   document.getElementById('tsett-java-args').value = srv.javaArgs || '';
-  document.getElementById('tsett-java-path').value = srv.javaPath || 'java';
+  populateJdkSelect('tsett', 'tsett-java-path', srv.javaPath || 'java');
   const proxyBtnRow = document.getElementById('tsett-proxy-btn-row');
   if (proxyBtnRow) proxyBtnRow.classList.toggle('hidden', !PAPER_SOFTWARES.has(srv.software));
 }
@@ -1104,7 +1170,454 @@ async function saveTabSettings() {
 
 async function browseJavaTabSettings() {
   const path = await window.mcpanel.browseJava();
-  if (path) document.getElementById('tsett-java-path').value = path;
+  if (path) setJdkDropdown('tsett', 'tsett-java-path', path);
+}
+
+// ─── Plugin / Mod Browser ─────────────────────────────────────────────────────
+
+const MODDED_SOFTWARES = new Set(['fabric']);
+const PLUGIN_SOFTWARES = new Set(['paper', 'purpur', 'folia', 'leaf', 'spigot', 'velocity']);
+
+let _serverPluginProvider = 'hangar';
+let _profilePluginProvider = 'hangar';
+let _pluginSearchTimer = null;
+let _pluginInstalledMap = {}; // key: `server_${id}` or `profile_${id}` → { slug: relPath }
+let _pluginPageState = {};   // key: ctx → { provider, query, offset, software, mcVersion }
+let _pluginDetailCache = {}; // key: ctx → { slug: <raw search result row> }
+let _pluginDetailState = null; // { ctx, slug, row, offset } for the currently-open details modal
+
+function _pluginCtxKey(ctx) {
+  return ctx === 'server' ? `server_${currentServerId}` : `profile_${currentProfileId}`;
+}
+function _isPluginInstalled(ctx, slug) {
+  return !!(_pluginInstalledMap[_pluginCtxKey(ctx)]?.[slug]);
+}
+function _markPluginInstalled(ctx, slug, relPath) {
+  const k = _pluginCtxKey(ctx);
+  if (!_pluginInstalledMap[k]) _pluginInstalledMap[k] = {};
+  _pluginInstalledMap[k][slug] = relPath;
+}
+function _markPluginUninstalled(ctx, slug) {
+  const k = _pluginCtxKey(ctx);
+  if (_pluginInstalledMap[k]) delete _pluginInstalledMap[k][slug];
+}
+
+function _pluginTabLabel(software) {
+  return MODDED_SOFTWARES.has(software) ? 'Mods' : 'Plugins';
+}
+
+function _pluginDestDir(software) {
+  return MODDED_SOFTWARES.has(software) ? 'mods' : 'plugins';
+}
+
+function openServerPluginsTab() {
+  const srv = config.servers.find(s => s.id === currentServerId);
+  if (!srv) return;
+  const label = _pluginTabLabel(srv.software);
+  document.getElementById('dtab-plugins-label').textContent = label;
+  _setupPluginProviders(srv.software, 'server');
+  const listEl = document.getElementById('server-plugin-list');
+  if (listEl.querySelector('.plugin-state-msg')) return;
+}
+
+function openProfilePluginsTab() {
+  const profile = profiles.find(p => p.id === currentProfileId);
+  const software = (profile && profile.software && profile.software.length === 1)
+    ? profile.software[0] : 'paper';
+  const label = _pluginTabLabel(software);
+  document.getElementById('ptab-plugins-label').textContent = label;
+  _setupPluginProviders(software, 'profile');
+}
+
+function _setupPluginProviders(software, ctx) {
+  const isMod = MODDED_SOFTWARES.has(software);
+  const hangarBtn = document.getElementById(`${ctx === 'server' ? 's' : 'p'}provider-hangar`);
+  const spigotBtn = document.getElementById(`${ctx === 'server' ? 's' : 'p'}provider-spigotmc`);
+  if (hangarBtn) hangarBtn.classList.toggle('hidden', isMod);
+  if (spigotBtn) spigotBtn.classList.toggle('hidden', isMod);
+  const defaultProvider = isMod ? 'modrinth' : 'hangar';
+  if (ctx === 'server') _serverPluginProvider = defaultProvider;
+  else _profilePluginProvider = defaultProvider;
+  document.querySelectorAll(`#${ctx === 'server' ? 'server' : 'profile'}-plugin-providers .plugin-provider-tab`)
+    .forEach(btn => btn.classList.toggle('active', btn.id.endsWith(defaultProvider)));
+}
+
+function switchPluginProvider(provider, ctx) {
+  if (ctx === 'server') _serverPluginProvider = provider;
+  else _profilePluginProvider = provider;
+  document.querySelectorAll(`#${ctx === 'server' ? 'server' : 'profile'}-plugin-providers .plugin-provider-tab`)
+    .forEach(btn => btn.classList.toggle('active', btn.id.endsWith(provider)));
+  searchPlugins(ctx);
+}
+
+function pluginSearchDebounce(ctx) {
+  clearTimeout(_pluginSearchTimer);
+  _pluginSearchTimer = setTimeout(() => searchPlugins(ctx), 400);
+}
+
+async function searchPlugins(ctx, append = false) {
+  const query = (document.getElementById(`${ctx}-plugin-search`)?.value || '').trim();
+  const provider = ctx === 'server' ? _serverPluginProvider : _profilePluginProvider;
+  const listEl = document.getElementById(`${ctx}-plugin-list`);
+  if (!listEl) return;
+
+  const srv = ctx === 'server' ? config.servers.find(s => s.id === currentServerId) : null;
+  const profile = ctx === 'profile' ? profiles.find(p => p.id === currentProfileId) : null;
+  const software = srv?.software || (profile?.software?.[0]) || 'paper';
+  const mcVersion = srv?.version || (profile?.versions?.[0]) || '';
+
+  const PAGE_SIZE = 100;
+
+  if (!append) {
+    listEl.innerHTML = `<div class="plugin-state-msg">Searching…</div>`;
+    _pluginPageState[ctx] = { provider, query, software, mcVersion, offset: 0 };
+    _pluginDetailCache[ctx] = {};
+  } else {
+    listEl.querySelector('.plugin-load-more')?.remove();
+    const loadingEl = document.createElement('div');
+    loadingEl.className = 'plugin-state-msg plugin-loading-more';
+    loadingEl.textContent = 'Loading…';
+    listEl.appendChild(loadingEl);
+  }
+
+  const state = _pluginPageState[ctx];
+  const requestOffset = append ? state.offset : 0;
+
+  try {
+    const { results, hasMore } = await _searchViaCli(state.provider, state.query,
+      { software: state.software, mcVersion: state.mcVersion }, PAGE_SIZE, requestOffset);
+    state.offset = requestOffset + results.length;
+    results.forEach(r => { _pluginDetailCache[ctx][r.slug] = r; });
+
+    if (!append) {
+      if (!results.length) {
+        listEl.innerHTML = `<div class="plugin-state-msg">No results for "${escapeHtml(state.query || 'featured')}".</div>`;
+        return;
+      }
+      listEl.innerHTML = results.map(r => _renderPluginRow(r, ctx, state.software)).join('');
+    } else {
+      listEl.querySelector('.plugin-loading-more')?.remove();
+      results.forEach(r => listEl.insertAdjacentHTML('beforeend', _renderPluginRow(r, ctx, state.software)));
+    }
+
+    if (hasMore) {
+      const loadMoreDiv = document.createElement('div');
+      loadMoreDiv.className = 'plugin-load-more';
+      loadMoreDiv.innerHTML = `<button class="btn-ghost-sm" onclick="_loadMorePlugins('${ctx}')">Load 100 more…</button>`;
+      listEl.appendChild(loadMoreDiv);
+    }
+  } catch (e) {
+    if (!append) {
+      listEl.innerHTML = `<div class="plugin-state-msg" style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    } else {
+      listEl.querySelector('.plugin-loading-more')?.remove();
+      toast('Failed to load more: ' + e.message, 'error');
+    }
+  }
+}
+
+function _loadMorePlugins(ctx) { searchPlugins(ctx, true); }
+
+function _fmtDownloads(n) {
+  if (!n) return '0';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+function _fmtDate(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleDateString(); } catch { return ''; }
+}
+
+function _renderPluginRow(r, ctx, software) {
+  const isInstalled = _isPluginInstalled(ctx, r.slug);
+  const btnId = `pibtn-${ctx}-${r.slug.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const icon = r.iconUrl
+    ? `<img class="plugin-icon" src="${escapeHtml(r.iconUrl)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        + `<div class="plugin-icon-placeholder" style="display:none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/></svg></div>`
+    : `<div class="plugin-icon-placeholder"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/></svg></div>`;
+  // Spiget resources hosted externally usually redirect to a human-facing
+  // release page rather than a jar — those can't be auto-installed. A few
+  // do link straight to a .jar file (e.g. a GitHub release asset) and are
+  // still safe to install directly, matching the same check the CLI backend
+  // makes in plugins.get_spiget_download. Purchase-required (premium) Spiget
+  // resources never reach here at all — the CLI filters them out of results.
+  const isBlockedExternal = !!r.external &&
+    !(r.externalUrl && r.externalUrl.toLowerCase().split('?')[0].endsWith('.jar'));
+  const externalBadge = isBlockedExternal ? `<span class="plugin-external-badge">EXTERNAL</span>` : '';
+  const dataAttrs = `data-slug="${escapeHtml(r.slug)}" data-platform="${escapeHtml(r.platform)}" data-name="${escapeHtml(r.name)}" data-author="${escapeHtml(r.author)}" data-owner="${escapeHtml(r.ownerName || '')}" data-ctx="${ctx}" data-software="${escapeHtml(software)}" data-external-url="${escapeHtml(r.externalUrl || '')}"`;
+  let btnClass, btnText, btnOnclick;
+  if (isBlockedExternal) {
+    btnClass = 'plugin-install-btn'; btnText = 'View Page';
+    btnOnclick = r.externalUrl
+      ? `onclick="event.stopPropagation();window.mcpanel.openExternal('${escapeHtml(r.externalUrl)}')"`
+      : `onclick="event.stopPropagation();toast('This plugin is hosted externally — check its SpigotMC resource page','info')"`;
+  } else if (isInstalled) {
+    btnClass = 'plugin-install-btn installed'; btnText = 'Installed';
+    btnOnclick = `onclick="event.stopPropagation();_pluginBtnClick(this)" title="Click to remove"`;
+  } else {
+    btnClass = 'plugin-install-btn'; btnText = 'Install';
+    btnOnclick = `onclick="event.stopPropagation();_pluginBtnClick(this)"`;
+  }
+  return `<div class="plugin-row clickable" onclick="_openPluginDetails('${ctx}','${escapeHtml(r.slug)}')">
+    ${icon}
+    <div class="plugin-info">
+      <div class="plugin-name">${escapeHtml(r.name)}${externalBadge}</div>
+      <div class="plugin-author">by ${escapeHtml(r.author)}</div>
+      ${r.description ? `<div class="plugin-desc">${escapeHtml(r.description)}</div>` : ''}
+    </div>
+    <div class="plugin-meta">
+      <span class="plugin-meta-downloads">⬇ ${_fmtDownloads(r.downloads)}</span>
+      ${r.latestVersion ? `<span class="plugin-meta-version">${escapeHtml(r.latestVersion)}</span>` : ''}
+      ${r.updatedAt ? `<span class="plugin-meta-updated">${_fmtDate(r.updatedAt)}</span>` : ''}
+    </div>
+    <button class="${btnClass}" id="${btnId}" ${btnOnclick} ${dataAttrs}>${btnText}</button>
+  </div>`;
+}
+
+function _pluginBtnClick(btn) {
+  const ctx = btn.dataset.ctx;
+  const software = btn.dataset.software;
+  if (_isPluginInstalled(ctx, btn.dataset.slug)) {
+    removePlugin(btn, ctx);
+  } else {
+    installPlugin({
+      slug: btn.dataset.slug, platform: btn.dataset.platform,
+      name: btn.dataset.name, author: btn.dataset.author,
+      ownerName: btn.dataset.owner,
+      externalUrl: btn.dataset.externalUrl || null,
+    }, ctx, software);
+  }
+}
+
+// ─── Plugin / Mod Details Modal ───────────────────────────────────────────────
+
+function _openPluginDetails(ctx, slug) {
+  const row = _pluginDetailCache[ctx]?.[slug];
+  if (!row) return;
+
+  document.getElementById('pdetail-name').textContent = row.name;
+  document.getElementById('pdetail-author').textContent = row.author;
+  document.getElementById('pdetail-desc').textContent = row.description || '';
+  document.getElementById('pdetail-longdesc').textContent = 'Loading…';
+  document.getElementById('pdetail-icon-wrap').innerHTML = row.iconUrl
+    ? `<img class="plugin-detail-icon" src="${escapeHtml(row.iconUrl)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        + `<div class="plugin-detail-icon-placeholder" style="display:none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/></svg></div>`
+    : `<div class="plugin-detail-icon-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/></svg></div>`;
+  document.getElementById('pdetail-versions').innerHTML = `<div class="plugin-state-msg">Loading…</div>`;
+
+  const websiteBtn = document.getElementById('pdetail-website-btn');
+  websiteBtn.onclick = null;
+  websiteBtn.disabled = true;
+
+  const srv = ctx === 'server' ? config.servers.find(s => s.id === currentServerId) : null;
+  const software = srv?.software || row.software || 'paper';
+  const isInstalled = _isPluginInstalled(ctx, slug);
+  const installBtn = document.getElementById('pdetail-install-btn');
+  installBtn.dataset.slug = slug;
+  installBtn.textContent = isInstalled ? 'Installed' : 'Install';
+  installBtn.disabled = false;
+  installBtn.className = isInstalled ? 'plugin-install-btn installed' : 'plugin-install-btn';
+  installBtn.onclick = () => _installFromDetailModal(installBtn, row, ctx, software);
+
+  _pluginDetailState = { ctx, slug, row, software, offset: 0 };
+  openModal('modal-plugin-details');
+  _loadPluginInfo(false);
+}
+
+async function _loadPluginInfo(append = false) {
+  const state = _pluginDetailState;
+  if (!state) return;
+  const versionsEl = document.getElementById('pdetail-versions');
+  const LIMIT = 25;
+
+  if (append) {
+    versionsEl.querySelector('.plugin-detail-loadmore')?.remove();
+    const loadingEl = document.createElement('div');
+    loadingEl.className = 'plugin-state-msg plugin-loading-more';
+    loadingEl.textContent = 'Loading…';
+    versionsEl.appendChild(loadingEl);
+  }
+
+  try {
+    const data = await window.mcpanel.pluginInfo(state.row.platform, state.slug, {
+      owner: state.row.ownerName, limit: LIMIT, offset: state.offset,
+    });
+    if (data.error) throw new Error(data.error);
+    if (_pluginDetailState !== state) return; // modal closed/switched while awaiting
+
+    const websiteBtn = document.getElementById('pdetail-website-btn');
+    if (data.websiteUrl) {
+      websiteBtn.disabled = false;
+      websiteBtn.onclick = () => window.mcpanel.openExternal(data.websiteUrl);
+    }
+
+    if (!append) {
+      document.getElementById('pdetail-longdesc').textContent =
+        data.longDescription || state.row.description || 'No description available.';
+    }
+
+    const versions = data.versions || [];
+    if (!append) {
+      if (!versions.length) {
+        versionsEl.innerHTML = `<div class="plugin-state-msg">No version history available.</div>`;
+        return;
+      }
+      versionsEl.innerHTML = versions.map(v => _renderVersionRow(v, state)).join('');
+    } else {
+      versionsEl.querySelector('.plugin-loading-more')?.remove();
+      versions.forEach(v => versionsEl.insertAdjacentHTML('beforeend', _renderVersionRow(v, state)));
+    }
+    state.offset += versions.length;
+
+    if (data.hasMoreVersions) {
+      const loadMoreDiv = document.createElement('div');
+      loadMoreDiv.className = 'plugin-detail-loadmore';
+      loadMoreDiv.innerHTML = `<button class="btn-ghost-sm" onclick="_loadPluginInfo(true)">Load more…</button>`;
+      versionsEl.appendChild(loadMoreDiv);
+    }
+  } catch (e) {
+    if (_pluginDetailState !== state) return;
+    if (!append) {
+      document.getElementById('pdetail-longdesc').textContent = state.row.description || '';
+      versionsEl.innerHTML = `<div class="plugin-state-msg" style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    } else {
+      versionsEl.querySelector('.plugin-loading-more')?.remove();
+      toast('Failed to load more versions: ' + e.message, 'error');
+    }
+  }
+}
+
+function _renderVersionRow(v, state) {
+  const rowId = `pvrow-${state.ctx}-${String(v.id).replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const title = v.changelog ? ` title="${escapeHtml(v.changelog)}"` : '';
+  return `<div class="plugin-version-row" id="${rowId}"${title} onclick="_installPluginVersion(this, '${escapeHtml(String(v.id))}')">
+    <div class="plugin-version-name">${escapeHtml(v.name || '?')}</div>
+    ${v.date ? `<div class="plugin-version-date">${_fmtDate(v.date)}</div>` : ''}
+  </div>`;
+}
+
+function _installPluginVersion(row, versionId) {
+  const state = _pluginDetailState;
+  if (!state || row.classList.contains('installing')) return;
+  const originalName = row.querySelector('.plugin-version-name').textContent;
+  row.classList.add('installing');
+  row.querySelector('.plugin-version-name').textContent = 'Installing…';
+  // Pass the top-level Install button as an override so it also reflects the
+  // (just-changed) installed state, matching what installing from the row's
+  // own button already does.
+  const installBtn = _pluginDetailState === state ? document.getElementById('pdetail-install-btn') : null;
+  installPlugin(state.row, state.ctx, state.software, versionId, installBtn).finally(() => {
+    if (row.isConnected) {
+      row.classList.remove('installing');
+      row.querySelector('.plugin-version-name').textContent = originalName;
+    }
+  });
+}
+
+function _installFromDetailModal(btn, row, ctx, software) {
+  if (_isPluginInstalled(ctx, row.slug)) {
+    removePlugin(btn, ctx).then(() => {
+      // Keep the row behind the modal (if still rendered) in sync too.
+      const rowBtn = document.getElementById(`pibtn-${ctx}-${row.slug.replace(/[^a-zA-Z0-9]/g, '_')}`);
+      if (rowBtn && !_isPluginInstalled(ctx, row.slug)) {
+        rowBtn.textContent = 'Install'; rowBtn.disabled = false; rowBtn.className = 'plugin-install-btn';
+      }
+    });
+  } else {
+    installPlugin(row, ctx, software, undefined, btn);
+  }
+}
+
+// Search is routed through mcpanel-cli's own `search plugins` API instead of
+// fetch()ing each platform directly — that avoids browser CORS entirely.
+async function _searchViaCli(platform, query, { software, mcVersion } = {}, limit = 100, offset = 0) {
+  const data = await window.mcpanel.searchPlugins(platform, query, { software, mcVersion, limit, offset });
+  if (data.error) throw new Error(data.error);
+  return { results: data.results || [], hasMore: !!data.hasMore };
+}
+
+async function installPlugin(pluginData, ctx, software, versionId, btnOverride) {
+  const serverId = ctx === 'server' ? currentServerId : null;
+  const profileId = ctx === 'profile' ? currentProfileId : null;
+  if (!serverId && !profileId) return;
+
+  const btnId = `pibtn-${ctx}-${pluginData.slug.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const rowBtn = document.getElementById(btnId);
+  const btns = [...new Set([rowBtn, btnOverride].filter(Boolean))];
+  const setBtns = (text, disabled, cls) => btns.forEach(b => {
+    b.textContent = text; b.disabled = disabled; b.className = cls;
+  });
+  setBtns('Installing', true, 'plugin-install-btn installing');
+
+  const srv = serverId ? config.servers.find(s => s.id === serverId) : null;
+  const effectiveSoftware = software || srv?.software || 'paper';
+  const mcVersion = srv?.version || '';
+  const destDir = _pluginDestDir(effectiveSoftware);
+
+  // If a different version of this plugin is already installed, its filename
+  // (e.g. embeds a version number) usually differs from the one we're about
+  // to write — remove it first so switching versions doesn't leave the old
+  // jar sitting alongside the new one (both would get loaded by the server).
+  const existingRelPath = _pluginInstalledMap[_pluginCtxKey(ctx)]?.[pluginData.slug];
+  if (existingRelPath) {
+    try {
+      if (serverId) await window.mcpanel.deleteServerFile(serverId, existingRelPath);
+      else await window.mcpanel.deleteProfileFile(profileId, existingRelPath);
+    } catch { /* best-effort — proceed with install regardless */ }
+  }
+
+  toast(`Installing ${pluginData.name}…`, 'info');
+  try {
+    // mcpanel-cli's `install plugin` resolves the download (including Hangar's
+    // owner lookup and Spiget's external/non-jar checks) and writes the file
+    // itself — no separate URL-resolution step needed here.
+    const result = await window.mcpanel.installPlugin(pluginData.platform, pluginData.slug, {
+      serverId, profileId, mcVersion,
+      owner: pluginData.ownerName || pluginData.author,
+      versionId,
+    });
+    if (result?.error) {
+      toast('Install failed: ' + result.error, 'error');
+      if (existingRelPath) _markPluginUninstalled(ctx, pluginData.slug); // old file was already removed above
+      setBtns('Install', false, 'plugin-install-btn');
+    } else {
+      const relPath = `${destDir}/${result.filename}`;
+      toast(`Installed ${pluginData.name} → ${relPath}`, 'success');
+      _markPluginInstalled(ctx, pluginData.slug, relPath);
+      setBtns('Installed', false, 'plugin-install-btn installed');
+    }
+  } catch (e) {
+    toast('Install failed: ' + e.message, 'error');
+    if (existingRelPath) _markPluginUninstalled(ctx, pluginData.slug);
+    setBtns('Install', false, 'plugin-install-btn');
+  }
+}
+
+async function removePlugin(btn, ctx) {
+  const slug = btn.dataset.slug;
+  const k = _pluginCtxKey(ctx);
+  const relPath = _pluginInstalledMap[k]?.[slug];
+  if (!relPath) return;
+  btn.textContent = 'Removing…';
+  btn.disabled = true;
+  try {
+    if (ctx === 'server') {
+      await window.mcpanel.deleteServerFile(currentServerId, relPath);
+    } else {
+      await window.mcpanel.deleteProfileFile(currentProfileId, relPath);
+    }
+    _markPluginUninstalled(ctx, slug);
+    toast('Plugin removed', 'info');
+    btn.textContent = 'Install';
+    btn.disabled = false;
+    btn.className = 'plugin-install-btn';
+  } catch (e) {
+    toast('Remove failed: ' + e, 'error');
+    btn.textContent = 'Installed';
+    btn.disabled = false;
+  }
 }
 
 // ─── Velocity Proxy Link ─────────────────────────────────────────────────────
@@ -1561,7 +2074,7 @@ async function saveQuickSettings() {
 
 async function browseJava() {
   const p = await window.mcpanel.browseJava();
-  if (p) document.getElementById('quick-java-path').value = p;
+  if (p) setJdkDropdown('quick', 'quick-java-path', p);
 }
 
 // ─── Server Settings Modal ────────────────────────────────────────────────────
@@ -1575,7 +2088,7 @@ function openServerSettingsModal() {
   document.getElementById('ss-port').value = srv.port;
   document.getElementById('ss-group').value = srv.group || '';
   document.getElementById('ss-java-args').value = srv.javaArgs || '';
-  document.getElementById('ss-java-path').value = srv.javaPath || 'java';
+  populateJdkSelect('ss', 'ss-java-path', srv.javaPath || 'java');
   openModal('modal-server-settings');
 }
 
@@ -1632,12 +2145,12 @@ async function saveServerSettings() {
 
 async function browseJavaSettings() {
   const p = await window.mcpanel.browseJava();
-  if (p) document.getElementById('ss-java-path').value = p;
+  if (p) setJdkDropdown('ss', 'ss-java-path', p);
 }
 
 async function browseJavaCreate() {
   const path = await window.mcpanel.browseJava();
-  if (path) document.getElementById('cs-java').value = path;
+  if (path) setJdkDropdown('cs', 'cs-java', path);
 }
 
 function onRamChange(prefix) {
@@ -1668,6 +2181,72 @@ function setRamDropdown(prefix, value) {
     sel.value = 'custom';
     if (customEl) { customEl.value = value || ''; customEl.style.display = ''; }
   }
+}
+
+// ─── JDK picker (dropdown of detected JDKs + a custom-path fallback) ──────────
+// The underlying text input (`inputId`) is always kept in sync with the
+// resolved choice, so existing save/read code that reads that input's
+// `.value` needs no changes — the dropdown is purely a UI layer on top.
+async function populateJdkSelect(prefix, inputId, currentValue) {
+  const sel = document.getElementById(`${prefix}-java-select`);
+  if (!sel) return;
+  sel.innerHTML = '<option value="java" title="java">Auto-detect (recommended)</option>';
+  let jdks = [];
+  try { jdks = await window.mcpanel.detectJdk(); } catch { jdks = []; }
+  jdks.forEach(j => {
+    const opt = document.createElement('option');
+    opt.value = j.path;
+    opt.title = j.path;
+    opt.textContent = `Java ${j.version}`;
+    sel.appendChild(opt);
+  });
+  const custom = document.createElement('option');
+  custom.value = '__custom__';
+  custom.textContent = 'Custom path…';
+  sel.appendChild(custom);
+
+  setJdkDropdown(prefix, inputId, currentValue);
+}
+
+// The dropdown's visible option text is just the JDK name — the actual
+// install path only shows as a tooltip (on the closed select, reflecting the
+// current selection; on each option, while the dropdown is open), so long
+// paths don't get truncated or clutter the option list.
+function _updateJdkSelectTooltip(sel, customPath) {
+  sel.title = sel.value === '__custom__' ? (customPath || '') : (sel.selectedOptions[0]?.title || sel.value);
+}
+
+function setJdkDropdown(prefix, inputId, value) {
+  const sel = document.getElementById(`${prefix}-java-select`);
+  const customRow = document.getElementById(`${prefix}-java-custom-row`);
+  const input = document.getElementById(inputId);
+  if (!sel) return;
+  const v = value || 'java';
+  const known = Array.from(sel.options).some(o => o.value === v);
+  if (known) {
+    sel.value = v;
+    if (customRow) customRow.style.display = 'none';
+  } else {
+    sel.value = '__custom__';
+    if (customRow) customRow.style.display = '';
+  }
+  if (input) input.value = v;
+  _updateJdkSelectTooltip(sel, v);
+}
+
+function onJdkSelectChange(prefix, inputId) {
+  const sel = document.getElementById(`${prefix}-java-select`);
+  const customRow = document.getElementById(`${prefix}-java-custom-row`);
+  const input = document.getElementById(inputId);
+  if (!sel) return;
+  const isCustom = sel.value === '__custom__';
+  if (customRow) customRow.style.display = isCustom ? '' : 'none';
+  if (isCustom) {
+    if (input) input.focus();
+  } else if (input) {
+    input.value = sel.value;
+  }
+  _updateJdkSelectTooltip(sel, input?.value);
 }
 
 function validateRamAndStorage(ram, storageLimit) {
@@ -1728,6 +2307,7 @@ async function openCreateServerModal() {
   const unstable = document.getElementById('cs-unstable');
   if (unstable) unstable.checked = false;
   setRamDropdown('cs', '2G');
+  populateJdkSelect('cs', 'cs-java', 'java');
   await loadProfilesForCreate();
   openModal('modal-create-server');
   onSoftwareChange();
@@ -1762,11 +2342,16 @@ async function onSoftwareChange() {
   const preRelease = preReleaseEl?.checked || false;
   const unstable = unstableEl?.checked || false;
 
+  if (software !== 'spigot') {
+    document.getElementById('cs-spigot-jdk-warning').classList.add('hidden');
+  }
+
   versionSel.innerHTML = '<option>Loading...</option>';
   const cacheKey = `${software}_${preRelease}_${unstable}`;
   if (versionCache[cacheKey]) {
     populateVersions(versionCache[cacheKey]);
     filterProfilesForSoftware(software);
+    await onVersionChange();
     return;
   }
 
@@ -1779,6 +2364,78 @@ async function onSoftwareChange() {
   versionCache[cacheKey] = r.versions;
   populateVersions(r.versions);
   filterProfilesForSoftware(software);
+  await onVersionChange();
+}
+
+// Re-checks the JDK picker whenever the version changes — Spigot's required
+// Java range is per-version (e.g. 1.21.11 needs 21, 26.2 needs 25-26), so a
+// JDK that was fine for one version may not be for another.
+async function onVersionChange() {
+  const software = document.getElementById('cs-software').value;
+  const version = document.getElementById('cs-version').value;
+
+  if (software !== 'spigot') {
+    document.getElementById('cs-spigot-jdk-warning')?.classList.add('hidden');
+    populateJdkSelect('cs', 'cs-java', document.getElementById('cs-java').value || 'java');
+    return;
+  }
+  if (!version || version === 'Loading...' || version === 'Failed to load') return;
+  await updateSpigotJdkPicker(version);
+}
+
+// Spigot-specific JDK picker: BuildTools enforces an exact compile-time Java
+// range that also matches what the compiled server needs to run, so this
+// shows real per-version compatibility instead of a generic "Auto-detect".
+async function updateSpigotJdkPicker(version) {
+  const sel = document.getElementById('cs-java-select');
+  const warnEl = document.getElementById('cs-spigot-jdk-warning');
+  if (!sel) return;
+
+  sel.innerHTML = '<option value="java">Checking installed JDKs…</option>';
+
+  let compat = null;
+  try {
+    compat = await window.mcpanel.getJdkCompatibility('spigot', version);
+  } catch (e) {
+    compat = null;
+  }
+
+  const jdks = compat?.jdks || [];
+  const recommended = compat?.recommended || null;
+  const rng = compat?.range;
+  const reqText = rng ? `Java ${rng.min}${rng.max ? '–' + rng.max : '+'}` : 'an unknown Java version';
+
+  sel.innerHTML = '';
+  jdks.forEach(j => {
+    const opt = document.createElement('option');
+    opt.value = j.path;
+    opt.disabled = !j.compatible;
+    const recTag = j.path === recommended ? ' (recommended)' : '';
+    opt.textContent = j.compatible
+      ? `Java ${j.version} — ${j.path}${recTag}`
+      : `Java ${j.version} — ${j.path}  (${j.reason})`;
+    sel.appendChild(opt);
+  });
+  const custom = document.createElement('option');
+  custom.value = '__custom__';
+  custom.textContent = jdks.length ? 'Custom path…' : 'No JDKs detected — enter a path manually';
+  sel.appendChild(custom);
+
+  if (recommended) {
+    setJdkDropdown('cs', 'cs-java', recommended);
+  } else {
+    sel.value = '__custom__';
+    document.getElementById('cs-java-custom-row').style.display = '';
+  }
+
+  if (warnEl) {
+    if (!recommended) {
+      warnEl.textContent = `⚠ None of your installed JDKs support ${reqText} for Spigot ${version} — install one, or enter a path manually below.`;
+      warnEl.classList.remove('hidden');
+    } else {
+      warnEl.classList.add('hidden');
+    }
+  }
 }
 
 function populateVersions(versions) {
@@ -1895,6 +2552,10 @@ function openProfileDetail(profileId) {
   profileNavPaths = [];
   profileCachedFileTree = null;
   selectedProfileFilePaths.clear();
+  const _pPluginListEl = document.getElementById('profile-plugin-list');
+  if (_pPluginListEl) _pPluginListEl.innerHTML = `<div class="plugin-state-msg">Search for plugins or mods to install them.</div>`;
+  const _pPluginSearchEl = document.getElementById('profile-plugin-search');
+  if (_pPluginSearchEl) _pPluginSearchEl.value = '';
 
   document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
   document.getElementById('page-profile-detail').classList.remove('hidden');
@@ -1926,13 +2587,14 @@ function _renderProfileSidebarTags() {
 }
 
 function switchProfileTab(name) {
-  ['overview', 'files', 'settings'].forEach(t => {
+  ['overview', 'files', 'plugins', 'settings'].forEach(t => {
     document.getElementById(`ptab-${t}`).classList.toggle('active', t === name);
     document.getElementById(`pane-profile-${t}`).classList.toggle('hidden', t !== name);
   });
   if (name === 'overview') openProfileOverviewTab();
   if (name === 'files') openProfileFileBrowser();
   if (name === 'settings') openProfileSettingsTab();
+  if (name === 'plugins') openProfilePluginsTab();
 }
 
 function openProfileOverviewTab() {
@@ -2278,15 +2940,30 @@ function createNewProfileFile() {
 function renderProfilesGrid() {
   window.mcpanel.getProfiles().then(p => {
     profiles = p;
+    const query = (document.getElementById('profiles-search')?.value || '').trim().toLowerCase();
     const grid = document.getElementById('profiles-grid');
     const empty = document.getElementById('profiles-empty');
-    grid.querySelectorAll('.server-card.profile-card').forEach(c => c.remove());
+    grid.querySelectorAll('.server-card.profile-card, .grid-no-results').forEach(c => c.remove());
     if (p.length === 0) {
       if (empty) empty.classList.remove('hidden');
       return;
     }
     if (empty) empty.classList.add('hidden');
-    p.forEach(profile => grid.appendChild(createProfileCard(profile)));
+    const filtered = query
+      ? p.filter(pr =>
+          pr.name.toLowerCase().includes(query) ||
+          (pr.description || '').toLowerCase().includes(query) ||
+          (pr.software || []).some(sw => sw.toLowerCase().includes(query))
+        )
+      : p;
+    if (filtered.length === 0) {
+      const msg = document.createElement('div');
+      msg.className = 'grid-no-results';
+      msg.textContent = `No profiles matching "${query}"`;
+      grid.appendChild(msg);
+      return;
+    }
+    filtered.forEach(profile => grid.appendChild(createProfileCard(profile)));
   });
 }
 
@@ -2553,6 +3230,85 @@ async function checkForCliUpdates() {
   applyCliUpdateResult(result);
 }
 
+// ─── BuildTools (SpigotMC) status + Spigot enable/disable ─────────────────────
+let spigotDisabled = false;
+
+function enableSpigotFunctionality() {
+  spigotDisabled = false;
+  const opt = document.getElementById('cs-opt-spigot');
+  if (opt) { opt.disabled = false; opt.textContent = 'Spigot'; }
+}
+
+function disableSpigotFunctionality() {
+  spigotDisabled = true;
+  const opt = document.getElementById('cs-opt-spigot');
+  if (opt) {
+    opt.disabled = true;
+    opt.textContent = 'Spigot (unavailable)';
+  }
+  const sel = document.getElementById('cs-software');
+  if (sel && sel.value === 'spigot') {
+    sel.value = 'paper';
+    onSoftwareChange();
+  }
+}
+
+function showBuildToolsMissingModal() {
+  openModal('modal-buildtools-missing');
+}
+
+function ignoreBuildToolsMissing() {
+  closeModal('modal-buildtools-missing');
+  disableSpigotFunctionality();
+  toast('Spigot support hidden — BuildTools could not be loaded', 'info');
+}
+
+// result: { version: "installed" | "none", path?, error?, helpUrl? }
+function applyBuildToolsResult(result) {
+  const statusEl = document.getElementById('buildtools-status-text');
+  if (!result) {
+    if (statusEl) statusEl.textContent = 'BuildTools: could not check status';
+    return;
+  }
+  if (result.version === 'installed') {
+    if (statusEl) statusEl.textContent = 'BuildTools: installed and ready';
+    enableSpigotFunctionality();
+  } else {
+    if (statusEl) {
+      statusEl.innerHTML = `BuildTools: <span style="color:var(--red)">unavailable — ${result.error || 'could not be downloaded'}</span>`;
+    }
+    disableSpigotFunctionality();
+  }
+}
+
+async function checkBuildToolsVersion() {
+  const statusEl = document.getElementById('buildtools-status-text');
+  if (statusEl) statusEl.textContent = 'Checking…';
+  try {
+    const result = await window.mcpanel.getBuildToolsVersion();
+    applyBuildToolsResult(result);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `BuildTools: ${e}`;
+  }
+}
+
+async function updateBuildToolsNow() {
+  const btn = document.getElementById('buildtools-update-btn');
+  const statusEl = document.getElementById('buildtools-status-text');
+  if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+  if (statusEl) statusEl.textContent = 'Updating BuildTools…';
+  try {
+    const result = await window.mcpanel.updateBuildTools();
+    applyBuildToolsResult(result);
+    if (result && result.version === 'installed') toast('BuildTools is up to date', 'success');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `BuildTools: ${e}`;
+    toast(String(e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Update Now'; }
+  }
+}
+
 // ─── Settings ─────────────────────────────────────────────────────────────────
 async function detectJdk() {
   const list = document.getElementById('jdk-list');
@@ -2759,7 +3515,7 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
     if (e.target === overlay) {
       const id = overlay.id;
-      if (id !== 'modal-download' && id !== 'modal-cli-missing') closeModal(id);
+      if (id !== 'modal-download' && id !== 'modal-cli-missing' && id !== 'modal-buildtools-missing') closeModal(id);
     }
   });
 });
@@ -2783,6 +3539,17 @@ function capitalise(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
 function escapeHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function stripCpuName(full) {
+  if (!full || full === 'Unknown CPU') return full;
+  return full
+    .replace(/\(R\)/g, '').replace(/\(TM\)/g, '')
+    .replace(/\bCPU\b\s*/g, '')                      // drop bare "CPU" word, keep clock speed
+    .replace(/\s+\d+-Core\s+Processor.*/i, '')
+    .replace(/\s+\d+-Core.*/i, '')
+    .replace(/\s+Processor\b.*/i, '')
+    .replace(/\s+/g, ' ').trim();
 }
 
 function formatBytes(bytes) {
@@ -3024,7 +3791,11 @@ async function openTerminal() {
     _ptyClosedUnlisten = await window.__TAURI__.event.listen('pty-closed', () => {
       _term.write('\r\n\x1b[31m[Process exited]\x1b[0m\r\n');
     });
-    setTimeout(() => { if (_termFit) _termFit.fit(); _term.focus(); }, 50);
+    setTimeout(() => {
+      if (_termFit) _termFit.fit();
+      if (_term) window.__TAURI_INTERNALS__.invoke('pty_resize', { rows: _term.rows, cols: _term.cols }).catch(() => {});
+      _term.focus();
+    }, 50);
   } catch (e) {
     toast('Failed to open terminal: ' + String(e), 'error');
     closeModal('modal-terminal');
@@ -3088,16 +3859,114 @@ async function updateSidebarStats() {
   if (systemInfo && systemInfo.totalStorage > 0) {
     const used = systemInfo.totalStorage - (systemInfo.availableStorage || 0);
     const pct  = Math.round((used / systemInfo.totalStorage) * 100);
-    const TB   = 1024 ** 4;
-    const usedTB  = (used / TB).toFixed(2);
-    const totalTB = (systemInfo.totalStorage / TB).toFixed(2);
-    if (storageEl)  storageEl.textContent = `${usedTB}/${totalTB}TB`;
+    const GB = 1024 ** 3, TB = 1024 ** 4;
+    const useTB = systemInfo.totalStorage >= TB;
+    const div   = useTB ? TB : GB;
+    const unit  = useTB ? 'TB' : 'GB';
+    const fmt   = useTB ? 2 : 1;
+    if (storageEl) storageEl.textContent =
+      `${(used / div).toFixed(fmt)}/${(systemInfo.totalStorage / div).toFixed(fmt)}${unit}`;
     if (storageBar) {
       storageBar.style.width = pct + '%';
       storageBar.className = 'sidebar-stat-bar-fill' +
         (pct > 85 ? ' bar-danger' : pct > 65 ? ' bar-warn' : '');
     }
   }
+
+  updateServersPageStats();
+}
+
+async function updateServersPageStats() {
+  const CIRC = 402.12; // 2π × 64
+
+  function setCircle(arcId, pct, colorClass) {
+    const arc = document.getElementById(arcId);
+    if (!arc) return;
+    arc.style.strokeDashoffset = CIRC * (1 - Math.min(Math.max(pct, 0), 100) / 100);
+    arc.className = 'stat-circle-arc' + (colorClass ? ' ' + colorClass : '');
+  }
+
+  // Servers
+  const total  = config.servers.length;
+  const online = Object.keys(serverStartTimes).length;
+  const offline = total - online;
+  const serversOnlineEl    = document.getElementById('sco-servers-online');
+  const serversOfflineEl   = document.getElementById('sco-servers-offline');
+  const serversDetOnlineEl = document.getElementById('sco-servers-detail-online');
+  const serversDetOfflineEl= document.getElementById('sco-servers-detail-offline');
+  if (serversOnlineEl)     serversOnlineEl.textContent     = online;
+  if (serversOfflineEl)    serversOfflineEl.textContent    = offline;
+  if (serversDetOnlineEl)  serversDetOnlineEl.textContent  = `${online} online`;
+  if (serversDetOfflineEl) serversDetOfflineEl.textContent = `${offline} offline`;
+  setCircle('sco-servers-arc', total > 0 ? (online / total) * 100 : 0, 'arc-green');
+
+  // RAM & CPU
+  try {
+    const stats = await window.mcpanel.getSystemStats();
+    if (stats && !stats.error) {
+      const ramPct = stats.totalRam > 0 ? Math.round((stats.usedRam / stats.totalRam) * 100) : 0;
+      const ramValEl  = document.getElementById('sco-ram-val');
+      const ramDetEl  = document.getElementById('sco-ram-detail');
+      if (ramValEl) ramValEl.textContent = `${ramPct}%`;
+      if (ramDetEl) ramDetEl.textContent = `${formatBytes(stats.usedRam)} / ${formatBytes(stats.totalRam)}`;
+      setCircle('sco-ram-arc', ramPct, ramPct > 85 ? 'arc-danger' : ramPct > 65 ? 'arc-warn' : '');
+
+      const cpuPct = Math.min(Math.round(stats.cpuPct), 100);
+      const cpuValEl   = document.getElementById('sco-cpu-val');
+      const cpuNameEl  = document.getElementById('sco-cpu-name');
+      const cpuCoresEl = document.getElementById('sco-cpu-cores');
+      if (cpuValEl)   cpuValEl.textContent   = `${cpuPct}%`;
+      const cpuFreq = stats.cpuFreqMhz || 0;
+      const cpuFreqStr = cpuFreq >= 1000
+        ? `${(cpuFreq / 1000).toFixed(2)} GHz`
+        : cpuFreq > 0 ? `${Math.round(cpuFreq)} MHz` : '';
+      const cpuTooltip = [stats.cpuName, cpuFreqStr ? `@ ${cpuFreqStr}` : ''].filter(Boolean).join(' ');
+      if (cpuNameEl)  { cpuNameEl.textContent = stripCpuName(stats.cpuName) || '—'; cpuNameEl.title = cpuTooltip; }
+      if (cpuCoresEl) {
+        cpuCoresEl.textContent = stats.cpuCores != null
+          ? `${stats.cpuCores}C / ${stats.cpuThreads}T`
+          : '—';
+        cpuCoresEl.title = cpuTooltip;
+      }
+      const cpuCardEl = document.getElementById('sco-cpu-card');
+      if (cpuCardEl) cpuCardEl.title = cpuTooltip;
+      setCircle('sco-cpu-arc', cpuPct, cpuPct > 85 ? 'arc-danger' : cpuPct > 65 ? 'arc-warn' : '');
+    }
+  } catch {}
+
+  // Storage
+  if (systemInfo && systemInfo.totalStorage > 0) {
+    const used = systemInfo.totalStorage - (systemInfo.availableStorage || 0);
+    const pct  = Math.round((used / systemInfo.totalStorage) * 100);
+    const storageValEl = document.getElementById('sco-storage-val');
+    const storageDetEl = document.getElementById('sco-storage-detail');
+    if (storageValEl) storageValEl.textContent = `${pct}%`;
+    if (storageDetEl) storageDetEl.textContent = `${formatBytes(used)} / ${formatBytes(systemInfo.totalStorage)}`;
+    setCircle('sco-storage-arc', pct, pct > 85 ? 'arc-danger' : pct > 65 ? 'arc-warn' : '');
+  }
+
+  // Players
+  let totalPlayers = 0, totalMaxPlayers = 0, velocityPlayers = 0, inGamePlayers = 0;
+  for (const d of Object.values(serverPlayerData)) {
+    totalPlayers    += d.players    || 0;
+    totalMaxPlayers += d.maxPlayers || 0;
+    if (d.isVelocity) velocityPlayers += d.players || 0;
+    else              inGamePlayers   += d.players || 0;
+  }
+  const hasVelocityServer = config.servers.some(s => s.software === 'velocity');
+  const playersOnlineEl   = document.getElementById('sco-players-online');
+  const playersMaxEl      = document.getElementById('sco-players-max');
+  const playersIngameEl   = document.getElementById('sco-players-detail-ingame');
+  const playersVelocityEl = document.getElementById('sco-players-detail-velocity');
+  if (playersOnlineEl) playersOnlineEl.textContent = totalPlayers;
+  if (playersMaxEl)    playersMaxEl.textContent    = totalMaxPlayers;
+  if (playersIngameEl) playersIngameEl.textContent = `${inGamePlayers} ingame`;
+  if (playersVelocityEl) {
+    playersVelocityEl.textContent = `${velocityPlayers} velocity`;
+    playersVelocityEl.classList.toggle('hidden', !hasVelocityServer);
+  }
+  const playersPct = totalMaxPlayers > 0 ? (totalPlayers / totalMaxPlayers) * 100 : 0;
+  setCircle('sco-players-arc', playersPct, '');
 }
 
 // ─── Velocity ────────────────────────────────────────────────────────────────
@@ -3136,4 +4005,400 @@ async function applyDefaultThemeNoCli() {
   } catch (e) {
     console.error('Failed to apply default theme without CLI:', e);
   }
+}
+
+// ─── Font Settings ────────────────────────────────────────────────────────────
+
+async function populateFontLists(currentFonts) {
+  const BUNDLED_DISPLAY = ['Poppins', 'system-ui'];
+  const BUNDLED_MONO = ['JetBrains Mono', 'monospace'];
+  const display = currentFonts?.display || 'Poppins';
+  const mono = currentFonts?.mono || 'JetBrains Mono';
+
+  let systemFonts = [];
+  try { systemFonts = await window.mcpanel.listSystemFonts(); } catch (_) {}
+
+  function fillSelect(id, bundled, all, selected) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = '';
+    const seen = new Set();
+    const bundledSet = new Set(bundled);
+    const all_fonts = [...bundled, selected, ...all].filter(Boolean);
+    for (const f of all_fonts) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = bundledSet.has(f) ? `${f} (built-in)` : f;
+      if (f === selected) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  fillSelect('font-display-select', BUNDLED_DISPLAY, systemFonts, display);
+  fillSelect('font-mono-select', BUNDLED_MONO, systemFonts, mono);
+  _syncWeightSelects(currentFonts);
+  applyFontPreview();
+}
+
+function _syncWeightSelects(fonts) {
+  const dw = document.getElementById('font-display-weight');
+  const mw = document.getElementById('font-mono-weight');
+  if (dw) dw.value = fonts?.displayWeight || '400';
+  if (mw) mw.value = fonts?.monoWeight || '400';
+}
+
+function _getDisplayFontValue() {
+  const sel = document.getElementById('font-display-select');
+  return (sel && sel.value) || 'Poppins';
+}
+
+function _getMonoFontValue() {
+  const sel = document.getElementById('font-mono-select');
+  return (sel && sel.value) || 'JetBrains Mono';
+}
+
+function _getDisplayWeightValue() {
+  const sel = document.getElementById('font-display-weight');
+  return (sel && sel.value) || '400';
+}
+
+function _getMonoWeightValue() {
+  const sel = document.getElementById('font-mono-weight');
+  return (sel && sel.value) || '400';
+}
+
+function _syncFontSelects(fonts) {
+  const dSel = document.getElementById('font-display-select');
+  const mSel = document.getElementById('font-mono-select');
+  if (dSel) dSel.value = fonts?.display || 'Poppins';
+  if (mSel) mSel.value = fonts?.mono || 'JetBrains Mono';
+  _syncWeightSelects(fonts);
+  applyFontPreview();
+}
+
+function applyFontSettings(fonts) {
+  const display = fonts.display || 'Poppins';
+  const mono = fonts.mono || 'JetBrains Mono';
+  const dw = fonts.displayWeight || '400';
+  const mw = fonts.monoWeight || '400';
+  let el = document.getElementById('font-override');
+  if (!el) { el = document.createElement('style'); el.id = 'font-override'; document.head.appendChild(el); }
+  el.textContent = `:root { --font-display: '${display}', system-ui, -apple-system, 'Segoe UI', sans-serif; --font-mono: '${mono}', 'Cascadia Code', Consolas, monospace; --font-display-weight: ${dw}; --font-mono-weight: ${mw}; }`;
+}
+
+function applyFontPreview() {
+  const display = _getDisplayFontValue();
+  const mono = _getMonoFontValue();
+  const dw = _getDisplayWeightValue();
+  const mw = _getMonoWeightValue();
+  const dEl = document.getElementById('font-preview-display');
+  const mEl = document.getElementById('font-preview-mono');
+  if (dEl) { dEl.style.fontFamily = `'${display}', system-ui, sans-serif`; dEl.style.fontWeight = dw; }
+  if (mEl) { mEl.style.fontFamily = `'${mono}', monospace`; mEl.style.fontWeight = mw; }
+}
+
+async function saveFontSettings() {
+  const fonts = { display: _getDisplayFontValue(), displayWeight: _getDisplayWeightValue(), mono: _getMonoFontValue(), monoWeight: _getMonoWeightValue() };
+  _appSettings.fonts = fonts;
+  await window.mcpanel.saveAppSettings(_appSettings);
+  applyFontSettings(fonts);
+  toast('Fonts applied');
+}
+
+async function resetFontSettings() {
+  const fonts = { display: 'Poppins', displayWeight: '400', mono: 'JetBrains Mono', monoWeight: '400' };
+  _appSettings.fonts = fonts;
+  await window.mcpanel.saveAppSettings(_appSettings);
+  applyFontSettings(fonts);
+  _syncFontSelects(fonts);
+  toast('Fonts reset to default');
+}
+
+// ─── Backups ──────────────────────────────────────────────────────────────────
+
+let backupProgressListener = null;
+
+async function openBackupsTab() {
+  if (!currentServerId) return;
+  await loadBackupList();
+}
+
+async function loadBackupList() {
+  const res = await window.mcpanel.listBackups(currentServerId);
+  const list = document.getElementById('backup-list');
+  const empty = document.getElementById('backup-empty');
+  const backups = res.backups || [];
+
+  const cards = list.querySelectorAll('.backup-entry');
+  cards.forEach(c => c.remove());
+
+  if (backups.length === 0) {
+    empty.style.display = '';
+  } else {
+    empty.style.display = 'none';
+    backups.forEach(b => {
+      const el = document.createElement('div');
+      el.className = 'backup-entry';
+      el.innerHTML = `
+        <div class="backup-entry-info">
+          <span class="backup-entry-name">${b.name}</span>
+          <span class="backup-entry-meta">${formatBytes(b.size)} &bull; ${formatDate(b.created)}</span>
+        </div>
+        <div class="backup-entry-actions">
+          <button class="btn-sm" onclick="restoreBackup('${b.name}')">Restore</button>
+          <button class="btn-sm btn-danger-sm" onclick="deleteBackup('${b.name}')">Delete</button>
+        </div>
+      `;
+      list.appendChild(el);
+    });
+  }
+}
+
+async function createBackup() {
+  if (!currentServerId) return;
+  const btn = document.getElementById('backup-create-btn');
+  const wrap = document.getElementById('backup-progress-wrap');
+  const fill = document.getElementById('backup-progress-fill');
+  const text = document.getElementById('backup-progress-text');
+
+  btn.disabled = true;
+  wrap.classList.remove('hidden');
+  fill.style.width = '0%';
+  text.textContent = 'Starting…';
+
+  if (backupProgressListener) {
+    await window.mcpanel.off('backup-progress', backupProgressListener);
+  }
+  backupProgressListener = (ev) => {
+    if (ev.payload && ev.payload.id === currentServerId) {
+      fill.style.width = ev.payload.progress + '%';
+      text.textContent = ev.payload.status;
+    }
+  };
+  await window.mcpanel.on('backup-progress', backupProgressListener);
+
+  try {
+    const res = await window.mcpanel.createBackup(currentServerId);
+    if (res.error) {
+      toast('Backup failed: ' + res.error, 'error');
+    } else {
+      toast('Backup created successfully');
+      await loadBackupList();
+    }
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => wrap.classList.add('hidden'), 2000);
+  }
+}
+
+async function deleteBackup(backupName) {
+  if (!currentServerId) return;
+  if (!confirm(`Delete backup "${backupName}"? This cannot be undone.`)) return;
+  const res = await window.mcpanel.deleteBackup(currentServerId, backupName);
+  if (res.error) { toast('Failed to delete backup: ' + res.error, 'error'); return; }
+  toast('Backup deleted');
+  await loadBackupList();
+}
+
+async function restoreBackup(backupName) {
+  if (!currentServerId) return;
+  if (!confirm(`Restore from "${backupName}"? This will overwrite current server files. Stop the server first if it's running.`)) return;
+  const wrap = document.getElementById('backup-progress-wrap');
+  const fill = document.getElementById('backup-progress-fill');
+  const text = document.getElementById('backup-progress-text');
+
+  wrap.classList.remove('hidden');
+  fill.style.width = '10%';
+  text.textContent = 'Restoring…';
+
+  if (backupProgressListener) {
+    await window.mcpanel.off('backup-progress', backupProgressListener);
+  }
+  backupProgressListener = (ev) => {
+    if (ev.payload && ev.payload.id === currentServerId) {
+      fill.style.width = ev.payload.progress + '%';
+      text.textContent = ev.payload.status;
+    }
+  };
+  await window.mcpanel.on('backup-progress', backupProgressListener);
+
+  const res = await window.mcpanel.restoreBackup(currentServerId, backupName);
+  if (res.error) {
+    toast('Restore failed: ' + res.error, 'error');
+  } else {
+    toast('Restore complete');
+  }
+  setTimeout(() => wrap.classList.add('hidden'), 2000);
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+  return bytes.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function formatDate(ms) {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString();
+}
+
+// ─── Schedules ────────────────────────────────────────────────────────────────
+
+let _editingScheduleId = null;
+
+async function openScheduleTab() {
+  if (!currentServerId) return;
+  await loadScheduleList();
+}
+
+async function loadScheduleList() {
+  const res = await window.mcpanel.getSchedules(currentServerId);
+  const list = document.getElementById('schedule-list');
+  const empty = document.getElementById('schedule-empty');
+  const schedules = res.schedules || [];
+
+  const cards = list.querySelectorAll('.schedule-card');
+  cards.forEach(c => c.remove());
+
+  if (schedules.length === 0) {
+    empty.style.display = '';
+  } else {
+    empty.style.display = 'none';
+    schedules.forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'schedule-card';
+      const actionLabel = { restart: 'Restart', start: 'Start', stop: 'Stop', backup: 'Backup', command: 'Run Command' }[s.action] || s.action;
+      const repeatStr = s.repeat ? `Every ${s.repeat_every} ${s.repeat_unit}` : 'Once';
+      const nextStr = s.next_run ? formatDate(s.next_run) : 'Not set';
+      el.innerHTML = `
+        <div class="schedule-card-header">
+          <div class="schedule-card-label">${s.label || actionLabel}</div>
+          <div class="schedule-card-badges">
+            <span class="schedule-badge">${actionLabel}</span>
+            <span class="schedule-badge">${repeatStr}</span>
+            ${!s.enabled ? '<span class="schedule-badge muted">Disabled</span>' : ''}
+          </div>
+        </div>
+        ${s.action === 'command' && s.command ? `<div class="schedule-card-cmd"><code>${escHtml(s.command)}</code></div>` : ''}
+        <div class="schedule-card-meta">Next: ${nextStr}</div>
+        <div class="schedule-card-actions">
+          <button class="btn-sm" onclick="runScheduleNow('${s.id}','${s.server_id}','${s.action}',${JSON.stringify(s.command||'')})">Run now</button>
+          <button class="btn-sm" onclick="editSchedule(${JSON.stringify(s)})">Edit</button>
+          <button class="btn-sm" onclick="toggleSchedule(${JSON.stringify(s)})">${s.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn-sm btn-danger-sm" onclick="deleteSchedule('${s.id}')">Delete</button>
+        </div>
+      `;
+      list.appendChild(el);
+    });
+  }
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function openCreateScheduleModal() {
+  _editingScheduleId = null;
+  document.getElementById('schedule-modal-title').textContent = 'Add Scheduled Task';
+  document.getElementById('sch-label').value = '';
+  document.getElementById('sch-action').value = 'restart';
+  document.getElementById('sch-command').value = '';
+  document.getElementById('sch-repeat').checked = false;
+  document.getElementById('sch-repeat-every').value = 1;
+  document.getElementById('sch-repeat-unit').value = 'days';
+  const now = new Date();
+  document.getElementById('sch-date').value = now.toISOString().slice(0, 10);
+  document.getElementById('sch-time').value = now.toTimeString().slice(0, 5);
+  document.getElementById('sch-command-row').classList.add('hidden');
+  document.getElementById('sch-repeat-row').classList.add('hidden');
+  document.getElementById('sch-submit').textContent = 'Save Task';
+  openModal('modal-create-schedule');
+}
+
+function editSchedule(s) {
+  _editingScheduleId = s.id;
+  document.getElementById('schedule-modal-title').textContent = 'Edit Scheduled Task';
+  document.getElementById('sch-label').value = s.label || '';
+  document.getElementById('sch-action').value = s.action || 'restart';
+  document.getElementById('sch-command').value = s.command || '';
+  document.getElementById('sch-repeat').checked = !!s.repeat;
+  document.getElementById('sch-repeat-every').value = s.repeat_every || 1;
+  document.getElementById('sch-repeat-unit').value = s.repeat_unit || 'days';
+  const d = s.next_run ? new Date(s.next_run) : new Date();
+  document.getElementById('sch-date').value = d.toISOString().slice(0, 10);
+  document.getElementById('sch-time').value = d.toTimeString().slice(0, 5);
+  document.getElementById('sch-command-row').classList.toggle('hidden', s.action !== 'command');
+  document.getElementById('sch-repeat-row').classList.toggle('hidden', !s.repeat);
+  document.getElementById('sch-submit').textContent = 'Update Task';
+  openModal('modal-create-schedule');
+}
+
+function onScheduleActionChange() {
+  const action = document.getElementById('sch-action').value;
+  document.getElementById('sch-command-row').classList.toggle('hidden', action !== 'command');
+}
+
+function onScheduleRepeatChange() {
+  const checked = document.getElementById('sch-repeat').checked;
+  document.getElementById('sch-repeat-row').classList.toggle('hidden', !checked);
+}
+
+async function saveSchedule() {
+  const label = document.getElementById('sch-label').value.trim();
+  const action = document.getElementById('sch-action').value;
+  const command = document.getElementById('sch-command').value.trim();
+  const repeat = document.getElementById('sch-repeat').checked;
+  const repeatEvery = parseInt(document.getElementById('sch-repeat-every').value) || 1;
+  const repeatUnit = document.getElementById('sch-repeat-unit').value;
+  const dateVal = document.getElementById('sch-date').value;
+  const timeVal = document.getElementById('sch-time').value;
+
+  if (!dateVal || !timeVal) { toast('Please set a date and time', 'error'); return; }
+  const nextRun = new Date(`${dateVal}T${timeVal}`).getTime();
+  if (isNaN(nextRun)) { toast('Invalid date/time', 'error'); return; }
+
+  const schedule = {
+    id: _editingScheduleId || ('sch_' + Date.now()),
+    server_id: currentServerId,
+    label,
+    action,
+    command,
+    next_run: nextRun,
+    repeat,
+    repeat_every: repeatEvery,
+    repeat_unit: repeatUnit,
+    enabled: true,
+    last_run: null,
+  };
+
+  const res = await window.mcpanel.saveSchedule(schedule);
+  if (res.error) { toast('Failed to save schedule: ' + res.error, 'error'); return; }
+  closeModal('modal-create-schedule');
+  toast(_editingScheduleId ? 'Schedule updated' : 'Schedule created');
+  await loadScheduleList();
+}
+
+async function deleteSchedule(scheduleId) {
+  if (!confirm('Delete this scheduled task?')) return;
+  const res = await window.mcpanel.deleteSchedule(scheduleId);
+  if (res.error) { toast('Failed to delete schedule: ' + res.error, 'error'); return; }
+  toast('Schedule deleted');
+  await loadScheduleList();
+}
+
+async function toggleSchedule(s) {
+  const updated = Object.assign({}, s, { enabled: !s.enabled });
+  const res = await window.mcpanel.saveSchedule(updated);
+  if (res.error) { toast('Failed to update schedule: ' + res.error, 'error'); return; }
+  await loadScheduleList();
+}
+
+async function runScheduleNow(scheduleId, serverId, action, command) {
+  const res = await window.mcpanel.runScheduleNow(serverId, action, command || null);
+  if (res.error) { toast('Failed to run task: ' + res.error, 'error'); return; }
+  toast('Task executed');
 }

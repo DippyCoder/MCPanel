@@ -70,6 +70,24 @@
   </div>
 </div>
 
+<!-- BuildTools missing modal (shown on startup when BuildTools couldn't be downloaded) -->
+<div class="modal-overlay hidden" id="modal-buildtools-missing">
+  <div class="modal danger" style="width:480px;text-align:center;padding:0">
+    <div style="padding:40px 40px 32px">
+      <div class="first-start-logo">
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" style="background:var(--toast-error-border);border-radius:14px;padding:12px;box-sizing:border-box"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </div>
+      <h2 class="var(--toast-error-text)">BuildTools Could Not Be Loaded</h2>
+      <p class="first-start-sub">MCPanel-CLI could not download SpigotMC's BuildTools after several attempts, so Spigot servers can't be compiled right now.</p>
+      <p class="first-start-sub">Everything else in MCPanel works normally. You can ignore this and hide Spigot until it's fixed, or check SpigotMC's BuildTools guide for help.</p>
+    </div>
+    <div class="first-start-footer" style="display:flex;gap:10px">
+      <button class="btn-ghost" style="flex:1;justify-content:center" onclick="ignoreBuildToolsMissing()">Ignore</button>
+      <button class="btn-primary" style="flex:1;justify-content:center" onclick="window.mcpanel.openExternal('https://www.spigotmc.org/wiki/buildtools/')">Help</button>
+    </div>
+  </div>
+</div>
+
 <!-- App Layout -->
 <div class="app">
   <!-- Sidebar -->
@@ -156,6 +174,116 @@
           </button>
         </div>
       </div>
+      <!-- Stats Overview -->
+      <div class="servers-overview" id="servers-overview">
+        <div class="stat-circle-card">
+          <div class="stat-circle-label">Servers</div>
+          <div class="stat-circle-wrap">
+            <svg class="stat-circle-svg" viewBox="0 0 160 160">
+              <circle class="stat-circle-track" cx="80" cy="80" r="64"/>
+              <circle class="stat-circle-arc" id="sco-servers-arc" cx="80" cy="80" r="64"/>
+            </svg>
+            <div class="stat-circle-inner">
+              <div class="stat-circle-dual">
+                <div class="stat-circle-dual-row">
+                  <span class="stat-circle-dual-num" id="sco-servers-online">—</span>
+                  <span class="stat-circle-dual-lbl">online</span>
+                </div>
+                <div class="stat-circle-dual-sep"></div>
+                <div class="stat-circle-dual-row">
+                  <span class="stat-circle-dual-num stat-circle-dual-num-dim" id="sco-servers-offline">—</span>
+                  <span class="stat-circle-dual-lbl">offline</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="stat-circle-detail">
+            <div id="sco-servers-detail-online">— online</div>
+            <div id="sco-servers-detail-offline">— offline</div>
+          </div>
+        </div>
+        <div class="stat-circle-card">
+          <div class="stat-circle-label">RAM</div>
+          <div class="stat-circle-wrap">
+            <svg class="stat-circle-svg" viewBox="0 0 160 160">
+              <circle class="stat-circle-track" cx="80" cy="80" r="64"/>
+              <circle class="stat-circle-arc" id="sco-ram-arc" cx="80" cy="80" r="64"/>
+            </svg>
+            <div class="stat-circle-inner">
+              <div class="stat-circle-value" id="sco-ram-val">—</div>
+              <div class="stat-circle-sub">used</div>
+            </div>
+          </div>
+          <div class="stat-circle-detail" id="sco-ram-detail">—</div>
+        </div>
+        <div class="stat-circle-card" id="sco-cpu-card">
+          <div class="stat-circle-label">CPU</div>
+          <div class="stat-circle-wrap">
+            <svg class="stat-circle-svg" viewBox="0 0 160 160">
+              <circle class="stat-circle-track" cx="80" cy="80" r="64"/>
+              <circle class="stat-circle-arc" id="sco-cpu-arc" cx="80" cy="80" r="64"/>
+            </svg>
+            <div class="stat-circle-inner">
+              <div class="stat-circle-value" id="sco-cpu-val">—</div>
+              <div class="stat-circle-sub">usage</div>
+            </div>
+          </div>
+          <div class="stat-circle-detail">
+            <div class="stat-circle-detail-name" id="sco-cpu-name">—</div>
+            <div id="sco-cpu-cores">—</div>
+          </div>
+        </div>
+        <div class="stat-circle-card">
+          <div class="stat-circle-label">Storage</div>
+          <div class="stat-circle-wrap">
+            <svg class="stat-circle-svg" viewBox="0 0 160 160">
+              <circle class="stat-circle-track" cx="80" cy="80" r="64"/>
+              <circle class="stat-circle-arc" id="sco-storage-arc" cx="80" cy="80" r="64"/>
+            </svg>
+            <div class="stat-circle-inner">
+              <div class="stat-circle-value" id="sco-storage-val">—</div>
+              <div class="stat-circle-sub">used</div>
+            </div>
+          </div>
+          <div class="stat-circle-detail" id="sco-storage-detail">—</div>
+        </div>
+        <div class="stat-circle-card">
+          <div class="stat-circle-label">Players</div>
+          <div class="stat-circle-wrap">
+            <svg class="stat-circle-svg" viewBox="0 0 160 160">
+              <circle class="stat-circle-track" cx="80" cy="80" r="64"/>
+              <circle class="stat-circle-arc" id="sco-players-arc" cx="80" cy="80" r="64"/>
+            </svg>
+            <div class="stat-circle-inner">
+              <div class="stat-circle-dual">
+                <div class="stat-circle-dual-row">
+                  <span class="stat-circle-dual-num" id="sco-players-online">—</span>
+                  <span class="stat-circle-dual-lbl">online</span>
+                </div>
+                <div class="stat-circle-dual-sep"></div>
+                <div class="stat-circle-dual-row">
+                  <span class="stat-circle-dual-num stat-circle-dual-num-dim" id="sco-players-max">—</span>
+                  <span class="stat-circle-dual-lbl">max</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="stat-circle-detail">
+            <div id="sco-players-detail-ingame">— ingame</div>
+            <div id="sco-players-detail-velocity" class="hidden">— velocity</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="servers-section-divider"></div>
+
+      <div class="grid-search-row">
+        <div class="grid-search-wrap">
+          <svg class="grid-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="servers-search" class="grid-search-input" placeholder="Search servers..." oninput="renderServersGrid()">
+        </div>
+      </div>
+
       <div class="servers-grid" id="servers-grid">
         <div class="empty-state hidden" id="servers-empty">
           <div class="empty-icon">
@@ -193,6 +321,18 @@
         <button class="detail-tab" id="dtab-files" onclick="switchDetailTab('files')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Files
+        </button>
+        <button class="detail-tab" id="dtab-plugins" onclick="switchDetailTab('plugins')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>
+          <span id="dtab-plugins-label">Plugins</span>
+        </button>
+        <button class="detail-tab" id="dtab-backups" onclick="switchDetailTab('backups')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Backups
+        </button>
+        <button class="detail-tab" id="dtab-schedule" onclick="switchDetailTab('schedule')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Schedule
         </button>
         <button class="detail-tab" id="dtab-settings" onclick="switchDetailTab('settings')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
@@ -284,6 +424,31 @@
             </div>
           </div>
 
+          <!-- Plugins / Mods Pane -->
+          <div id="pane-plugins" class="hidden">
+            <div class="card plugin-card">
+              <div class="plugin-toolbar">
+                <div class="plugin-providers" id="server-plugin-providers">
+                  <button class="plugin-provider-tab active" id="sprovider-hangar" onclick="switchPluginProvider('hangar','server')">Hangar</button>
+                  <button class="plugin-provider-tab" id="sprovider-modrinth" onclick="switchPluginProvider('modrinth','server')">Modrinth</button>
+                  <button class="plugin-provider-tab" id="sprovider-spigotmc" onclick="switchPluginProvider('spigotmc','server')">SpigotMC</button>
+                </div>
+                <div class="plugin-search-wrap">
+                  <input type="text" id="server-plugin-search" class="plugin-search-input" placeholder="Search..."
+                    oninput="pluginSearchDebounce('server')"
+                    onkeydown="if(event.key==='Enter')searchPlugins('server')">
+                </div>
+                <button class="btn-ghost-sm" onclick="searchPlugins('server')">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  Search
+                </button>
+              </div>
+              <div class="plugin-list" id="server-plugin-list">
+                <div class="plugin-state-msg">Search for plugins or mods to install them.</div>
+              </div>
+            </div>
+          </div>
+
           <!-- Settings Pane -->
           <div id="pane-settings" class="hidden">
             <div class="card inline-settings-card">
@@ -326,7 +491,8 @@
                   </div>
                   <div class="form-group full">
                     <label>Java Path</label>
-                    <div class="input-row">
+                    <select id="tsett-java-select" class="input" onchange="onJdkSelectChange('tsett','tsett-java-path')"></select>
+                    <div class="input-row" id="tsett-java-custom-row" style="display:none;margin-top:6px">
                       <input type="text" id="tsett-java-path" class="input" placeholder="java">
                       <button class="btn-sm" onclick="browseJavaTabSettings()">Browse</button>
                     </div>
@@ -353,6 +519,62 @@
               <div class="inline-settings-footer">
                 <button class="btn-primary" onclick="saveTabSettings()">Save Settings</button>
                 <button class="btn-ghost" onclick="switchDetailTab('console')">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Backups Pane -->
+          <div id="pane-backups" class="hidden">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Backups
+                </div>
+                <button class="btn-primary" id="backup-create-btn" onclick="createBackup()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                  Create Backup
+                </button>
+              </div>
+              <div class="backup-progress hidden" id="backup-progress-wrap">
+                <div class="progress-bar-wrap"><div class="progress-bar-fill" id="backup-progress-fill" style="width:0%"></div></div>
+                <div class="backup-progress-text" id="backup-progress-text"></div>
+              </div>
+              <div class="backup-list" id="backup-list">
+                <div class="backup-empty" id="backup-empty" style="display:none">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;display:block;margin:0 auto 8px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <p style="color:var(--text-muted);font-size:13px;text-align:center">No backups yet. Create one above.</p>
+                </div>
+              </div>
+              <div class="backup-info-note">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                Backups are stored as .zip files. The <code>logs/</code> folder is excluded to save space.
+              </div>
+            </div>
+          </div>
+
+          <!-- Schedule Pane -->
+          <div id="pane-schedule" class="hidden">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  Scheduled Tasks
+                </div>
+                <button class="btn-primary" onclick="openCreateScheduleModal()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                  Add Task
+                </button>
+              </div>
+              <div class="schedule-list" id="schedule-list">
+                <div class="schedule-empty" id="schedule-empty" style="display:none">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;display:block;margin:0 auto 8px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  <p style="color:var(--text-muted);font-size:13px;text-align:center">No scheduled tasks. Click "Add Task" to create one.</p>
+                </div>
+              </div>
+              <div class="backup-info-note">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                Schedules only run while MCPanel is open.
               </div>
             </div>
           </div>
@@ -415,7 +637,8 @@
               </div>
               <div class="setting-row">
                 <label>Java Path</label>
-                <div class="input-row-sm">
+                <select id="quick-java-select" class="input-sm" onchange="onJdkSelectChange('quick','quick-java-path')"></select>
+                <div class="input-row-sm" id="quick-java-custom-row" style="display:none;margin-top:6px">
                   <input type="text" class="input-sm" id="quick-java-path" placeholder="java">
                   <button class="btn-xs" onclick="browseJava()">Browse</button>
                 </div>
@@ -466,6 +689,12 @@
           Profiles are server presets. Add plugins, configs, and files to a profile folder, and they'll be copied to your server on creation. Profiles can be locked to specific software or versions.
         </div>
       </div>
+      <div class="grid-search-row">
+        <div class="grid-search-wrap">
+          <svg class="grid-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="profiles-search" class="grid-search-input" placeholder="Search profiles..." oninput="renderProfilesGrid()">
+        </div>
+      </div>
       <div class="profiles-grid" id="profiles-grid">
         <div class="empty-state hidden" id="profiles-empty">
           <div class="empty-icon">
@@ -507,6 +736,10 @@
         <button class="detail-tab" id="ptab-files" onclick="switchProfileTab('files')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Files
+        </button>
+        <button class="detail-tab" id="ptab-plugins" onclick="switchProfileTab('plugins')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>
+          <span id="ptab-plugins-label">Plugins</span>
         </button>
         <button class="detail-tab" id="ptab-settings" onclick="switchProfileTab('settings')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
@@ -589,6 +822,31 @@
                   </div>
                   <div class="file-upload-progress-text" id="profile-file-upload-progress-text"></div>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Profile Plugins / Mods Pane -->
+          <div id="pane-profile-plugins" class="hidden">
+            <div class="card plugin-card">
+              <div class="plugin-toolbar">
+                <div class="plugin-providers" id="profile-plugin-providers">
+                  <button class="plugin-provider-tab active" id="pprovider-hangar" onclick="switchPluginProvider('hangar','profile')">Hangar</button>
+                  <button class="plugin-provider-tab" id="pprovider-modrinth" onclick="switchPluginProvider('modrinth','profile')">Modrinth</button>
+                  <button class="plugin-provider-tab" id="pprovider-spigotmc" onclick="switchPluginProvider('spigotmc','profile')">SpigotMC</button>
+                </div>
+                <div class="plugin-search-wrap">
+                  <input type="text" id="profile-plugin-search" class="plugin-search-input" placeholder="Search..."
+                    oninput="pluginSearchDebounce('profile')"
+                    onkeydown="if(event.key==='Enter')searchPlugins('profile')">
+                </div>
+                <button class="btn-ghost-sm" onclick="searchPlugins('profile')">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  Search
+                </button>
+              </div>
+              <div class="plugin-list" id="profile-plugin-list">
+                <div class="plugin-state-msg">Search for plugins or mods to install them.</div>
               </div>
             </div>
           </div>
@@ -682,6 +940,19 @@
       </div>
       <div class="settings-layout">
         <div class="settings-section">
+          <h3>Behavior</h3>
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">Run servers in background</div>
+              <div class="setting-desc">When enabled, servers keep running after MCPanel closes. When disabled, all servers are stopped on close.</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="setting-run-in-bg" onchange="saveRunInBackground()" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="settings-section">
           <h3>Java Detection</h3>
           <p class="section-desc">Detected Java installations on your system</p>
           <button class="btn-sm" onclick="detectJdk()">
@@ -708,6 +979,22 @@
               <span id="update-status-text" style="font-size:12px;color:var(--text-muted)">MCPanel: —</span>
               <span id="cli-update-status-text" style="font-size:12px;color:var(--text-muted)">MCPanel-CLI: —</span>
             </div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>BuildTools</h3>
+          <p class="section-desc">SpigotMC BuildTools.jar, used to compile Spigot servers locally</p>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button class="btn-sm" onclick="checkBuildToolsVersion()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                Check BuildTools Version
+              </button>
+              <button class="btn-sm" id="buildtools-update-btn" onclick="updateBuildToolsNow()">
+                Update Now
+              </button>
+            </div>
+            <span id="buildtools-status-text" style="font-size:12px;color:var(--text-muted)">BuildTools: —</span>
           </div>
         </div>
         <div class="settings-section">
@@ -743,6 +1030,54 @@
           <div id="installed-themes-list"></div>
         </div>
         <div class="settings-section">
+          <h3>Fonts</h3>
+          <p class="section-desc">Customize fonts used throughout MCPanel. Bundled fonts work everywhere; system fonts must be installed on your machine.</p>
+          <div class="font-picker-row">
+            <div class="font-picker-label">
+              <span>UI &amp; Titles</span>
+              <span class="font-picker-hint">Poppins is bundled</span>
+            </div>
+            <div class="font-picker-controls">
+              <select id="font-display-select" class="input" onchange="applyFontPreview()">
+                <option>Loading fonts…</option>
+              </select>
+              <select id="font-display-weight" class="input" onchange="applyFontPreview()">
+                <option value="300">Light</option>
+                <option value="400">Regular</option>
+                <option value="500">Medium</option>
+                <option value="600">Semi Bold</option>
+                <option value="700">Bold</option>
+              </select>
+            </div>
+          </div>
+          <div class="font-picker-row">
+            <div class="font-picker-label">
+              <span>Code &amp; Console</span>
+              <span class="font-picker-hint">JetBrains Mono is bundled</span>
+            </div>
+            <div class="font-picker-controls">
+              <select id="font-mono-select" class="input" onchange="applyFontPreview()">
+                <option>Loading fonts…</option>
+              </select>
+              <select id="font-mono-weight" class="input" onchange="applyFontPreview()">
+                <option value="300">Light</option>
+                <option value="400">Regular</option>
+                <option value="500">Medium</option>
+                <option value="600">Semi Bold</option>
+                <option value="700">Bold</option>
+              </select>
+            </div>
+          </div>
+          <div class="font-preview" id="font-preview">
+            <div class="font-preview-display" id="font-preview-display">The quick brown fox — MCPanel Settings</div>
+            <div class="font-preview-mono" id="font-preview-mono">server.jar  1234  0x1F  /config/paper.yml</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn-primary" onclick="saveFontSettings()">Apply</button>
+            <button class="btn-ghost" onclick="resetFontSettings()">Reset to Default</button>
+          </div>
+        </div>
+        <div class="settings-section">
           <h3>About</h3>
           <p class="section-desc" id="about-version">MCPanel · Built for Minecraft server management</p>
           <div class="about-grid">
@@ -762,6 +1097,8 @@
           </div>
           <div class="settings-footer">
             <button class="settings-footer-link" onclick="window.mcpanel.openExternal('https://get-mcpanel.vercel.app/privacy')">Privacy Policy</button>
+            <button class="settings-footer-link" onclick="window.mcpanel.openExternal('https://get-mcpanel.vercel.app/contribute')">Credits</button>
+            <button class="settings-footer-link" onclick="window.mcpanel.openExternal('https://get-mcpanel.vercel.app/copyright')">Copyrights &amp; Licenses</button>
           </div>
         </div>
       </div>
@@ -796,12 +1133,12 @@
             <option value="vanilla">Vanilla</option>
             <option value="fabric">Fabric</option>
             <option value="velocity">Velocity</option>
-            <option value="spigot">Spigot</option>
+            <option value="spigot" id="cs-opt-spigot">Spigot</option>
           </select>
         </div>
         <div class="form-group">
           <label>Version</label>
-          <select id="cs-version" class="input">
+          <select id="cs-version" class="input" onchange="onVersionChange()">
             <option>Loading...</option>
           </select>
         </div>
@@ -842,7 +1179,8 @@
         </div>
         <div class="form-group full">
           <label>Java Executable</label>
-          <div class="input-row">
+          <select id="cs-java-select" class="input" onchange="onJdkSelectChange('cs','cs-java')"></select>
+          <div class="input-row" id="cs-java-custom-row" style="display:none;margin-top:6px">
             <input type="text" id="cs-java" class="input" placeholder="java" value="java">
             <button class="btn-sm" onclick="browseJavaCreate()">Browse</button>
           </div>
@@ -863,8 +1201,9 @@
       <!-- Spigot warning -->
       <div class="warning-box hidden" id="cs-spigot-warning">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        Spigot requires manual compilation via BuildTools. The server folder will be created but no JAR will be downloaded. Place your compiled spigot.jar in the server folder after creation.
+        MCPanel needs to compile Spigot locally using BuildTools.jar. This may take a few minutes depending on your system. Make sure you have JDK 17-21 installed!
       </div>
+      <div class="warning-box hidden" id="cs-spigot-jdk-warning" style="margin-top:8px"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-ghost" onclick="closeModal('modal-create-server')">Cancel</button>
@@ -1223,7 +1562,8 @@
         </div>
         <div class="form-group full">
           <label>Java Path</label>
-          <div class="input-row">
+          <select id="ss-java-select" class="input" onchange="onJdkSelectChange('ss','ss-java-path')"></select>
+          <div class="input-row" id="ss-java-custom-row" style="display:none;margin-top:6px">
             <input type="text" id="ss-java-path" class="input" placeholder="java">
             <button class="btn-sm" onclick="browseJavaSettings()">Browse</button>
           </div>
@@ -1497,6 +1837,41 @@
   </div>
 </div>
 
+<!-- Plugin / Mod Details Modal -->
+<div class="modal-overlay hidden" id="modal-plugin-details">
+  <div class="modal large plugin-detail-modal">
+    <div class="modal-header">
+      <h2>Plugin Details</h2>
+      <button class="modal-close" onclick="closeModal('modal-plugin-details')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body plugin-detail-body">
+      <div class="plugin-detail-main">
+        <div class="plugin-detail-head">
+          <div id="pdetail-icon-wrap"></div>
+          <div class="plugin-detail-headtext">
+            <div class="plugin-detail-name" id="pdetail-name"></div>
+            <div class="plugin-detail-author">by <span id="pdetail-author"></span></div>
+            <div class="plugin-detail-desc" id="pdetail-desc"></div>
+          </div>
+          <div class="plugin-detail-actions">
+            <button class="plugin-install-btn" id="pdetail-install-btn">Install</button>
+            <button class="btn-ghost-sm" id="pdetail-website-btn">Website</button>
+          </div>
+        </div>
+        <div class="plugin-detail-longdesc" id="pdetail-longdesc"></div>
+      </div>
+      <div class="plugin-detail-sidebar">
+        <div class="plugin-detail-section-title">Versions</div>
+        <div class="plugin-detail-versions" id="pdetail-versions">
+          <div class="plugin-state-msg">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Window resize handles (decorations:false) -->
 <div class="wnd-resize nw" onmousedown="window.mcpanel.startResizeDragging('NorthWest')"></div>
 <div class="wnd-resize n"  onmousedown="window.mcpanel.startResizeDragging('North')"></div>
@@ -1524,3 +1899,67 @@
 <script src="app.js"></script>
 </body>
 </html>
+
+<!-- Create/Edit Schedule Modal -->
+<div class="modal-overlay hidden" id="modal-create-schedule">
+  <div class="modal medium">
+    <div class="modal-header">
+      <h2 id="schedule-modal-title">Add Scheduled Task</h2>
+      <button class="modal-close" onclick="closeModal('modal-create-schedule')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Label <span class="label-hint">(optional)</span></label>
+          <input type="text" id="sch-label" class="input" placeholder="e.g. Daily Restart">
+        </div>
+        <div class="form-group full">
+          <label>Action</label>
+          <select id="sch-action" class="input" onchange="onScheduleActionChange()">
+            <option value="restart">Restart Server</option>
+            <option value="start">Start Server</option>
+            <option value="stop">Stop Server</option>
+            <option value="backup">Take Backup</option>
+            <option value="command">Run Command</option>
+          </select>
+        </div>
+        <div class="form-group full hidden" id="sch-command-row">
+          <label>Command</label>
+          <input type="text" id="sch-command" class="input" placeholder="e.g. say Server restarting in 1 minute">
+        </div>
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" id="sch-date" class="input">
+        </div>
+        <div class="form-group">
+          <label>Time</label>
+          <input type="time" id="sch-time" class="input">
+        </div>
+        <div class="form-group full">
+          <label class="checkbox-item" style="font-size:13px">
+            <input type="checkbox" id="sch-repeat" onchange="onScheduleRepeatChange()">
+            Repeat this task
+          </label>
+        </div>
+        <div class="form-group full hidden" id="sch-repeat-row">
+          <label>Repeat every</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="sch-repeat-every" class="input" value="1" min="1" style="width:80px">
+            <select id="sch-repeat-unit" class="input" style="flex:1">
+              <option value="minutes">Minutes</option>
+              <option value="hours">Hours</option>
+              <option value="days" selected>Days</option>
+              <option value="weeks">Weeks</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-create-schedule')">Cancel</button>
+      <button class="btn-primary" onclick="saveSchedule()" id="sch-submit">Save Task</button>
+    </div>
+  </div>
+</div>

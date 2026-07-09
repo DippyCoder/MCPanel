@@ -10,12 +10,14 @@ pub fn run() {
             let handle = app.handle().clone();
             app.manage(commands::AppState {
                 log_streamers: Mutex::new(HashMap::new()),
-                app_handle: handle,
+                app_handle: handle.clone(),
+                active_backup: Mutex::new(None),
             });
             app.manage(commands::PtyState {
                 master: Mutex::new(None),
                 writer: Mutex::new(None),
             });
+            tauri::async_runtime::spawn(commands::run_scheduler(handle));
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -82,6 +84,18 @@ pub fn run() {
             commands::create_profile_file,
             commands::rename_profile_file,
             commands::upload_files_to_profile,
+            commands::create_backup,
+            commands::list_backups,
+            commands::delete_backup,
+            commands::restore_backup,
+            commands::get_schedules,
+            commands::save_schedule,
+            commands::delete_schedule,
+            commands::run_schedule_now,
+            commands::get_app_settings,
+            commands::save_app_settings,
+            commands::shutdown_all_servers,
+            commands::list_system_fonts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

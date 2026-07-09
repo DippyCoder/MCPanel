@@ -36,7 +36,7 @@
   const _listeners = {};   // channel → [{original, wrapped, unlisten}]
 
   function on(channel, cb) {
-    const allowed = ['server-log', 'server-stopped', 'download-progress'];
+    const allowed = ['server-log', 'server-stopped', 'download-progress', 'backup-progress', 'schedule-fired'];
     if (!allowed.includes(channel)) return;
     if (!_listeners[channel]) _listeners[channel] = [];
     const wrapped = (e) => cb(e.payload);
@@ -193,6 +193,12 @@
       const result = await cli(['detect-jdk']);
       return Array.isArray(result) ? result : (result.jdks || []);
     },
+
+    // Which detected JDKs can actually build/run a given software+version —
+    // drives the Spigot JDK picker (BuildTools enforces an exact compile-time
+    // Java range, so silent auto-detection isn't enough there).
+    getJdkCompatibility: (software, version) =>
+      cli(['fetch', 'jdk-compat', '-sw', software, '-v', version]),
 
     browseJava: () => _invoke('browse_file', {
       title: 'Select Java Executable',
@@ -355,6 +361,10 @@
       }
     },
 
+    // BuildTools (SpigotMC) — installed/latest build + manual update trigger
+    getBuildToolsVersion: () => cli(['buildtools', 'version']),
+    updateBuildTools: () => cli(['buildtools', 'update']),
+
     openExternal: (url) => _invoke('open_external', { url }),
 
     // Open server/profile folders via opener plugin
@@ -389,9 +399,55 @@
       await _invoke('open_path', { path });
     },
 
+    // Backups
+    createBackup: (id) => _invoke('create_backup', { id }),
+    listBackups: (id) => _invoke('list_backups', { id }),
+    deleteBackup: (id, backupName) => _invoke('delete_backup', { id, backupName }),
+    restoreBackup: (id, backupName) => _invoke('restore_backup', { id, backupName }),
+
+    // Schedules
+    getSchedules: (serverId) => _invoke('get_schedules', { serverId }),
+    saveSchedule: (schedule) => _invoke('save_schedule', { schedule }),
+    deleteSchedule: (scheduleId) => _invoke('delete_schedule', { scheduleId }),
+    runScheduleNow: (serverId, action, command) => _invoke('run_schedule_now', { serverId, action, command: command || null }),
+
+    // App settings
+    getAppSettings: () => _invoke('get_app_settings'),
+    saveAppSettings: (settings) => _invoke('save_app_settings', { settings }),
+    listSystemFonts: () => _invoke('list_system_fonts'),
+    shutdownAllServers: () => _invoke('shutdown_all_servers'),
+
     // Events
     on,
     off,
+
+    // Plugin / Mod search + install — routed through mcpanel-cli's own
+    // urllib-backed API so it isn't subject to browser CORS at all (Spiget's
+    // policy blocks the standard User-Agent header on a plain webview fetch).
+    searchPlugins: (platform, query, opts = {}) => {
+      const args = ['search', 'plugins', platform, query || ''];
+      if (opts.software) args.push('-sw', opts.software);
+      if (opts.mcVersion) args.push('-v', opts.mcVersion);
+      if (opts.limit) args.push('-n', String(opts.limit));
+      if (opts.offset) args.push('-o', String(opts.offset));
+      return cli(args);
+    },
+    installPlugin: (platform, slug, opts = {}) => {
+      const args = ['install', 'plugin', platform, slug];
+      if (opts.serverId) args.push('-id', opts.serverId);
+      if (opts.profileId) args.push('--profile-id', opts.profileId);
+      if (opts.mcVersion) args.push('-v', opts.mcVersion);
+      if (opts.owner) args.push('--owner', opts.owner);
+      if (opts.versionId) args.push('--version', String(opts.versionId));
+      return cli(args);
+    },
+    pluginInfo: (platform, slug, opts = {}) => {
+      const args = ['info', 'plugin', platform, slug];
+      if (opts.owner) args.push('--owner', opts.owner);
+      if (opts.limit) args.push('-n', String(opts.limit));
+      if (opts.offset) args.push('-o', String(opts.offset));
+      return cli(args);
+    },
 
     // Window
     minimize,
