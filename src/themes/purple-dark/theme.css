@@ -1,8 +1,13 @@
 /* ═══════════════════════════════════════════════════════
-   Purple Dark — MCPanel Default Theme
+   Purple Dark - MCPanel Old default theme
    Author: DippyCoder
-   The original MCPanel look — dark with purple accents.
-   All values are the built-in defaults from style.css.
+   The classic MCPanel style.
    ═══════════════════════════════════════════════════════ */
 
-/* No overrides needed — purple dark is the base palette defined in style.css. */
+
+:root {
+  /* Suggested native window/taskbar icon for this theme. Honored when the
+     user's App Icon setting is "Auto". Available keys: default, blue, green,
+     red, yellow, black, white, outline, outline-white. */
+  --app-icon: default;
+}

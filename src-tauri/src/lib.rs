@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod app_log;
 mod commands;
 
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            app_log::init(&app.package_info().version.to_string());
             let handle = app.handle().clone();
             app.manage(commands::AppState {
                 log_streamers: Mutex::new(HashMap::new()),
@@ -43,6 +45,7 @@ pub fn run() {
             commands::browse_file,
             commands::install_cli,
             commands::get_app_log_path,
+            commands::log_event,
             commands::get_log_since,
             commands::open_terminal,
             commands::write_server_file,
@@ -52,6 +55,7 @@ pub fn run() {
             commands::create_server_file,
             commands::rename_server_file,
             commands::read_server_file,
+            commands::export_server_files,
             commands::pty_open,
             commands::pty_write,
             commands::pty_resize,
@@ -84,6 +88,7 @@ pub fn run() {
             commands::create_profile_file,
             commands::rename_profile_file,
             commands::upload_files_to_profile,
+            commands::export_profile_files,
             commands::create_backup,
             commands::list_backups,
             commands::delete_backup,

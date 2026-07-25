@@ -32,6 +32,15 @@
     return JSON.parse(raw);
   }
 
+  // mcpanel.json is the server's own manifest (id, dir, etc.) — not something
+  // a user should see or touch from the file browser.
+  function _stripMcpanelJson(nodes) {
+    if (!Array.isArray(nodes)) return nodes;
+    return nodes
+      .filter(n => n.name !== 'mcpanel.json')
+      .map(n => n.children ? { ...n, children: _stripMcpanelJson(n.children) } : n);
+  }
+
   // ─── Event bridge ────────────────────────────────────────────────────────────
   const _listeners = {};   // channel → [{original, wrapped, unlisten}]
 
@@ -236,7 +245,11 @@
       return JSON.parse(raw);
     },
 
-    getServerFileTree: (id) => cli(['fetch', 'files', '-id', id]),
+    getServerFileTree: async (id) => {
+      const r = await cli(['fetch', 'files', '-id', id]);
+      if (r && Array.isArray(r.tree)) r.tree = _stripMcpanelJson(r.tree);
+      return r;
+    },
 
     openTerminal: () => _invoke('open_terminal'),
     ptyOpen: () => _invoke('pty_open'),
@@ -268,6 +281,9 @@
     readServerFile: (id, relPath) =>
       _invoke('read_server_file', { id, relPath }),
 
+    exportServerFiles: (id, relPaths, destDir) =>
+      _invoke('export_server_files', { id, relPaths, destDir }),
+
     updateProfile: (id, data) =>
       _invoke('update_profile', { id, ...data }),
     getProfileFileTree: (id) =>
@@ -286,6 +302,8 @@
       _invoke('rename_profile_file', { id, oldPath, newPath }),
     uploadFilesToProfile: (id, srcPaths, destDir) =>
       _invoke('upload_files_to_profile', { id, srcPaths, destDir }),
+    exportProfileFiles: (id, relPaths, destDir) =>
+      _invoke('export_profile_files', { id, relPaths, destDir }),
 
     createProfileFromServer: async (id, profileData, selectedPaths) => {
       const args = [
@@ -398,6 +416,7 @@
       const path = await _invoke('get_app_log_path');
       await _invoke('open_path', { path });
     },
+    logEvent: (message, level = 'info') => _invoke('log_event', { level, message }),
 
     // Backups
     createBackup: (id) => _invoke('create_backup', { id }),

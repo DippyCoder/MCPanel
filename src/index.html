@@ -13,7 +13,7 @@
 <div class="titlebar">
   <div class="titlebar-drag" data-tauri-drag-region="deep">
     <div class="titlebar-logo">
-      <img src="assets/icon.png" width="18" height="18" style="object-fit:contain;border-radius:3px">
+      <img id="titlebar-logo-img" src="assets/icon.png" width="18" height="18" style="object-fit:contain;border-radius:3px">
       <span>MCPanel</span>
     </div>
   </div>
@@ -113,28 +113,28 @@
       <div class="sidebar-stats-title">System</div>
       <div class="sidebar-stat-row">
         <span class="sidebar-stat-label">Servers</span>
-        <span class="sidebar-stat-value" id="stat-servers">—</span>
+        <span class="sidebar-stat-value" id="stat-servers">-</span>
       </div>
       <div class="sidebar-stat-row">
         <span class="sidebar-stat-label">RAM</span>
         <div class="sidebar-stat-bar-wrap">
           <div class="sidebar-stat-bar-fill" id="stat-ram-bar" style="width:0%"></div>
         </div>
-        <span class="sidebar-stat-value" id="stat-ram">—</span>
+        <span class="sidebar-stat-value" id="stat-ram">-</span>
       </div>
       <div class="sidebar-stat-row">
         <span class="sidebar-stat-label">CPU</span>
         <div class="sidebar-stat-bar-wrap">
           <div class="sidebar-stat-bar-fill" id="stat-cpu-bar" style="width:0%"></div>
         </div>
-        <span class="sidebar-stat-value" id="stat-cpu">—</span>
+        <span class="sidebar-stat-value" id="stat-cpu">-</span>
       </div>
       <div class="sidebar-stat-row">
         <span class="sidebar-stat-label">Storage</span>
         <div class="sidebar-stat-bar-wrap">
           <div class="sidebar-stat-bar-fill" id="stat-storage-bar" style="width:0%"></div>
         </div>
-        <span class="sidebar-stat-value" id="stat-storage">—</span>
+        <span class="sidebar-stat-value" id="stat-storage">-</span>
       </div>
     </div>
 
@@ -186,20 +186,20 @@
             <div class="stat-circle-inner">
               <div class="stat-circle-dual">
                 <div class="stat-circle-dual-row">
-                  <span class="stat-circle-dual-num" id="sco-servers-online">—</span>
+                  <span class="stat-circle-dual-num" id="sco-servers-online">-</span>
                   <span class="stat-circle-dual-lbl">online</span>
                 </div>
                 <div class="stat-circle-dual-sep"></div>
                 <div class="stat-circle-dual-row">
-                  <span class="stat-circle-dual-num stat-circle-dual-num-dim" id="sco-servers-offline">—</span>
+                  <span class="stat-circle-dual-num stat-circle-dual-num-dim" id="sco-servers-offline">-</span>
                   <span class="stat-circle-dual-lbl">offline</span>
                 </div>
               </div>
             </div>
           </div>
           <div class="stat-circle-detail">
-            <div id="sco-servers-detail-online">— online</div>
-            <div id="sco-servers-detail-offline">— offline</div>
+            <div id="sco-servers-detail-online">- online</div>
+            <div id="sco-servers-detail-offline">- offline</div>
           </div>
         </div>
         <div class="stat-circle-card">
@@ -210,11 +210,11 @@
               <circle class="stat-circle-arc" id="sco-ram-arc" cx="80" cy="80" r="64"/>
             </svg>
             <div class="stat-circle-inner">
-              <div class="stat-circle-value" id="sco-ram-val">—</div>
+              <div class="stat-circle-value" id="sco-ram-val">-</div>
               <div class="stat-circle-sub">used</div>
             </div>
           </div>
-          <div class="stat-circle-detail" id="sco-ram-detail">—</div>
+          <div class="stat-circle-detail" id="sco-ram-detail">-</div>
         </div>
         <div class="stat-circle-card" id="sco-cpu-card">
           <div class="stat-circle-label">CPU</div>
@@ -224,13 +224,13 @@
               <circle class="stat-circle-arc" id="sco-cpu-arc" cx="80" cy="80" r="64"/>
             </svg>
             <div class="stat-circle-inner">
-              <div class="stat-circle-value" id="sco-cpu-val">—</div>
+              <div class="stat-circle-value" id="sco-cpu-val">-</div>
               <div class="stat-circle-sub">usage</div>
             </div>
           </div>
           <div class="stat-circle-detail">
-            <div class="stat-circle-detail-name" id="sco-cpu-name">—</div>
-            <div id="sco-cpu-cores">—</div>
+            <div class="stat-circle-detail-name" id="sco-cpu-name">-</div>
+            <div id="sco-cpu-cores">-</div>
           </div>
         </div>
         <div class="stat-circle-card">
@@ -241,11 +241,11 @@
               <circle class="stat-circle-arc" id="sco-storage-arc" cx="80" cy="80" r="64"/>
             </svg>
             <div class="stat-circle-inner">
-              <div class="stat-circle-value" id="sco-storage-val">—</div>
+              <div class="stat-circle-value" id="sco-storage-val">-</div>
               <div class="stat-circle-sub">used</div>
             </div>
           </div>
-          <div class="stat-circle-detail" id="sco-storage-detail">—</div>
+          <div class="stat-circle-detail" id="sco-storage-detail">-</div>
         </div>
         <div class="stat-circle-card">
           <div class="stat-circle-label">Players</div>
@@ -257,20 +257,20 @@
             <div class="stat-circle-inner">
               <div class="stat-circle-dual">
                 <div class="stat-circle-dual-row">
-                  <span class="stat-circle-dual-num" id="sco-players-online">—</span>
+                  <span class="stat-circle-dual-num" id="sco-players-online">-</span>
                   <span class="stat-circle-dual-lbl">online</span>
                 </div>
                 <div class="stat-circle-dual-sep"></div>
                 <div class="stat-circle-dual-row">
-                  <span class="stat-circle-dual-num stat-circle-dual-num-dim" id="sco-players-max">—</span>
+                  <span class="stat-circle-dual-num stat-circle-dual-num-dim" id="sco-players-max">-</span>
                   <span class="stat-circle-dual-lbl">max</span>
                 </div>
               </div>
             </div>
           </div>
           <div class="stat-circle-detail">
-            <div id="sco-players-detail-ingame">— ingame</div>
-            <div id="sco-players-detail-velocity" class="hidden">— velocity</div>
+            <div id="sco-players-detail-ingame">- ingame</div>
+            <div id="sco-players-detail-velocity" class="hidden">- velocity</div>
           </div>
         </div>
       </div>
@@ -282,6 +282,14 @@
           <svg class="grid-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input type="text" id="servers-search" class="grid-search-input" placeholder="Search servers..." oninput="renderServersGrid()">
         </div>
+        <select id="servers-sort" class="grid-sort-select" onchange="onServersSortChange()" title="Sort servers">
+          <option value="name">Name</option>
+          <option value="lastBoot">Last Boot</option>
+          <option value="created">Creation Date</option>
+        </select>
+        <button type="button" id="servers-sort-dir-btn" class="sort-dir-btn" onclick="onServersSortDirToggle()" title="Reverse sort order">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 4v16M6 14l6 6 6-6"/></svg>
+        </button>
       </div>
 
       <div class="servers-grid" id="servers-grid">
@@ -334,6 +342,10 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           Schedule
         </button>
+        <button class="detail-tab" id="dtab-players" onclick="switchDetailTab('players')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Players
+        </button>
         <button class="detail-tab" id="dtab-settings" onclick="switchDetailTab('settings')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
           Settings
@@ -367,32 +379,117 @@
                 </button>
               </div>
             </div>
+
+            <!-- Status bar -->
+            <div class="card detail-status-bar">
+              <div class="status-bar-metrics">
+                <div class="status-tile status-tile-sm">
+                  <span class="status-tile-label">Status</span>
+                  <span class="big-status" id="big-status-badge">OFFLINE</span>
+                </div>
+                <div class="status-tile status-tile-sm">
+                  <span class="status-tile-label">Port</span>
+                  <span class="status-tile-value mono" id="detail-port">-</span>
+                </div>
+                <div class="status-tile status-tile-sm">
+                  <span class="status-tile-label">Uptime</span>
+                  <span class="status-tile-value mono" id="detail-uptime">-</span>
+                </div>
+                <div class="status-tile status-tile-circle">
+                  <div class="mini-circle-wrap">
+                    <svg class="mini-circle-svg" viewBox="0 0 64 64">
+                      <circle class="mini-circle-track" cx="32" cy="32" r="26"/>
+                      <circle class="mini-circle-arc" id="detail-players-arc" cx="32" cy="32" r="26"/>
+                    </svg>
+                    <div class="mini-circle-inner"><span class="mini-circle-val" id="detail-players">0/0</span></div>
+                  </div>
+                  <div class="mini-stat-meta">
+                    <span class="mini-stat-label">Players</span>
+                  </div>
+                </div>
+                <div class="status-tile status-tile-circle">
+                  <div class="mini-circle-wrap">
+                    <svg class="mini-circle-svg" viewBox="0 0 64 64">
+                      <circle class="mini-circle-track" cx="32" cy="32" r="26"/>
+                      <circle class="mini-circle-arc" id="detail-cpu-arc" cx="32" cy="32" r="26"/>
+                    </svg>
+                    <div class="mini-circle-inner"><span class="mini-circle-val" id="detail-cpu">-</span></div>
+                  </div>
+                  <div class="mini-stat-meta">
+                    <span class="mini-stat-label">CPU</span>
+                    <span class="mini-stat-sub" id="detail-cpu-sub">-</span>
+                  </div>
+                </div>
+                <div class="status-tile status-tile-circle">
+                  <div class="mini-circle-wrap">
+                    <svg class="mini-circle-svg" viewBox="0 0 64 64">
+                      <circle class="mini-circle-track" cx="32" cy="32" r="26"/>
+                      <circle class="mini-circle-arc" id="detail-ram-arc" cx="32" cy="32" r="26"/>
+                    </svg>
+                    <div class="mini-circle-inner"><span class="mini-circle-val" id="detail-ram">-</span></div>
+                  </div>
+                  <div class="mini-stat-meta">
+                    <span class="mini-stat-label">RAM</span>
+                    <span class="mini-stat-sub" id="detail-ram-sub">-</span>
+                  </div>
+                </div>
+                <div class="status-tile status-tile-circle">
+                  <div class="mini-circle-wrap">
+                    <svg class="mini-circle-svg" viewBox="0 0 64 64">
+                      <circle class="mini-circle-track" cx="32" cy="32" r="26"/>
+                      <circle class="mini-circle-arc" id="detail-storage-arc" cx="32" cy="32" r="26"/>
+                    </svg>
+                    <div class="mini-circle-inner"><span class="mini-circle-val" id="detail-storage">-</span></div>
+                  </div>
+                  <div class="mini-stat-meta">
+                    <span class="mini-stat-label">Storage</span>
+                    <span class="mini-stat-sub" id="detail-storage-sub">-</span>
+                  </div>
+                </div>
+              </div>
+              <div id="detail-player-list" style="display:none;font-size:11px;color:var(--text-muted);word-break:break-all"></div>
+            </div>
           </div>
 
           <!-- Files Pane -->
           <div id="pane-files" class="hidden">
             <div class="card file-card">
               <div class="file-toolbar">
+                <input type="checkbox" id="file-select-all" class="file-row-check" title="Select all" onchange="toggleSelectAllFiles(this.checked)">
                 <div class="file-breadcrumb" id="file-breadcrumb"></div>
-                <button class="btn-ghost-sm" id="file-up-btn" onclick="fileBrowserUp()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                  Back
+                <div class="file-sel-actions hidden" id="file-sel-actions">
+                  <span class="file-sel-count" id="file-sel-count"></span>
+                  <button class="btn-ghost-sm btn-icon-sm" title="Download selected" onclick="downloadSelectedFiles()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  </button>
+                  <button class="btn-ghost-sm btn-icon-sm" title="Move selected" onclick="openFileMoveModal('server')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="12 10 15 13 12 16"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
+                  </button>
+                  <button class="btn-ghost-sm btn-icon-sm" title="Delete selected" onclick="deleteSelectedFiles()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                  </button>
+                  <span class="file-toolbar-sep"></span>
+                </div>
+                <button class="btn-ghost-sm btn-icon-sm" title="Refresh" onclick="reloadFileTree()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
                 </button>
-                <button class="btn-ghost-sm" onclick="reloadFileTree()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-                  Refresh
-                </button>
-                <button class="btn-ghost-sm" onclick="createNewFolder()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                  New Folder
-                </button>
-                <button class="btn-ghost-sm" onclick="createNewFile()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
-                  New File
-                </button>
-                <button class="btn-ghost-sm" onclick="openServerFolder()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                  Open in Explorer
+                <div class="file-new-wrap">
+                  <button class="btn-ghost-sm btn-icon-sm" id="file-new-btn" title="Create New" onclick="toggleFileNewMenu(event, 'server')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                  </button>
+                  <div class="file-new-menu hidden" id="file-new-menu">
+                    <button type="button" onclick="fileNewMenuPick('server','file')">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+                      New File
+                    </button>
+                    <button type="button" onclick="fileNewMenuPick('server','folder')">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                      New Folder
+                    </button>
+                  </div>
+                </div>
+                <button class="btn-ghost-sm btn-icon-sm" title="Open in Explorer" onclick="openServerFolder()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M13 19h-8a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v4"/><path d="M16 22l5 -5"/><path d="M21 21.5v-4.5h-4.5"/></svg>
                 </button>
               </div>
               <div class="file-list" id="file-list"
@@ -403,7 +500,6 @@
               <div class="file-upload-section">
                 <div class="file-upload-header">
                   <span class="file-upload-title">Upload</span>
-                  <button class="btn-ghost-sm" onclick="document.getElementById('file-upload-input').click()">Browse files</button>
                   <input type="file" id="file-upload-input" multiple style="display:none" onchange="handleFileInputChange(event)">
                 </div>
                 <div class="file-drop-zone" id="file-drop-zone"
@@ -579,43 +675,47 @@
             </div>
           </div>
 
+          <!-- Players Pane -->
+          <div id="pane-players" class="hidden">
+            <div class="card player-card">
+              <!-- Sub-tabs: the roster, and (when a player is picked) their control panel -->
+              <div class="player-subtabs">
+                <button class="player-subtab active" id="psub-list" onclick="showPlayerRoster()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  All Players
+                </button>
+                <button class="player-subtab hidden" id="psub-detail" onclick="showPlayerDetailTab()">
+                  <span id="psub-detail-name">Player</span>
+                </button>
+                <button class="btn-ghost-sm btn-icon-sm" id="player-refresh-btn" title="Refresh" onclick="reloadPlayers()" style="margin-left:auto">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                </button>
+              </div>
+
+              <!-- Roster view -->
+              <div id="player-view-roster">
+                <div class="player-section-head">
+                  <span class="player-section-title">Players</span>
+                  <span class="player-section-count" id="player-count">0</span>
+                </div>
+                <div class="player-grid" id="player-grid"></div>
+                <div id="player-empty" class="player-empty hidden">No known players yet. Players appear here after they join the server.</div>
+
+                <div class="player-section-head" id="player-banned-head" style="margin-top:18px">
+                  <span class="player-section-title">Banned</span>
+                  <span class="player-section-count" id="player-banned-count">0</span>
+                </div>
+                <div class="player-grid" id="player-banned-grid"></div>
+              </div>
+
+              <!-- Per-player control panel -->
+              <div id="player-view-detail" class="hidden"></div>
+            </div>
+          </div>
+
         </div>
 
         <div class="detail-sidebar">
-          <!-- Status card -->
-          <div class="card status-card">
-            <div class="status-header">
-              <div class="big-status" id="big-status-badge">OFFLINE</div>
-              <div class="status-info">
-                <div class="stat-row"><span>Port</span><span id="detail-port" class="mono">—</span></div>
-                <div class="stat-row"><span>Uptime</span><span id="detail-uptime" class="mono">—</span></div>
-                <div class="stat-bar-group">
-                  <div class="stat-bar-label">Players</div>
-                  <div class="stat-bar-wrap">
-                    <div class="stat-bar-fill bar-purple" id="detail-players-bar" style="width:0%"></div>
-                    <span class="stat-bar-text" id="detail-players">—</span>
-                  </div>
-                </div>
-                <div id="detail-player-list" style="display:none;font-size:11px;color:var(--text-muted);padding:2px 0 4px 0;word-break:break-all"></div>
-                <div class="stat-bar-group">
-                  <div class="stat-bar-label">RAM</div>
-                  <div class="stat-bar-wrap">
-                    <div class="stat-bar-fill bar-purple" id="detail-ram-bar" style="width:0%"></div>
-                    <span class="stat-bar-text" id="detail-ram">—</span>
-                  </div>
-                </div>
-                <div class="stat-bar-group">
-                  <div class="stat-bar-label">Storage</div>
-                  <div class="stat-bar-wrap">
-                    <div class="stat-bar-fill bar-purple" id="detail-storage-bar" style="width:0%"></div>
-                    <span class="stat-bar-text" id="detail-storage">—</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="control-buttons" id="control-buttons"></div>
-          </div>
-
           <!-- Quick settings -->
           <div class="card">
             <div class="card-header"><div class="card-title">Quick Settings</div></div>
@@ -694,6 +794,14 @@
           <svg class="grid-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input type="text" id="profiles-search" class="grid-search-input" placeholder="Search profiles..." oninput="renderProfilesGrid()">
         </div>
+        <select id="profiles-sort" class="grid-sort-select" onchange="onProfilesSortChange()" title="Sort profiles">
+          <option value="name">Name</option>
+          <option value="lastBoot">Last Used</option>
+          <option value="created">Creation Date</option>
+        </select>
+        <button type="button" id="profiles-sort-dir-btn" class="sort-dir-btn" onclick="onProfilesSortDirToggle()" title="Reverse sort order">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 4v16M6 14l6 6 6-6"/></svg>
+        </button>
       </div>
       <div class="profiles-grid" id="profiles-grid">
         <div class="empty-state hidden" id="profiles-empty">
@@ -776,26 +884,41 @@
           <div id="pane-profile-files" class="hidden">
             <div class="card file-card">
               <div class="file-toolbar">
+                <input type="checkbox" id="profile-file-select-all" class="file-row-check" title="Select all" onchange="toggleSelectAllProfileFiles(this.checked)">
                 <div class="file-breadcrumb" id="profile-file-breadcrumb"></div>
-                <button class="btn-ghost-sm" id="profile-file-up-btn" onclick="profileFileBrowserUp()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                  Back
+                <div class="file-sel-actions hidden" id="profile-file-sel-actions">
+                  <span class="file-sel-count" id="profile-file-sel-count"></span>
+                  <button class="btn-ghost-sm btn-icon-sm" title="Download selected" onclick="downloadSelectedProfileFiles()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  </button>
+                  <button class="btn-ghost-sm btn-icon-sm" title="Move selected" onclick="openFileMoveModal('profile')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="12 10 15 13 12 16"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
+                  </button>
+                  <button class="btn-ghost-sm btn-icon-sm" title="Delete selected" onclick="deleteSelectedProfileFiles()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                  </button>
+                  <span class="file-toolbar-sep"></span>
+                </div>
+                <button class="btn-ghost-sm btn-icon-sm" title="Refresh" onclick="reloadProfileFileTree()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
                 </button>
-                <button class="btn-ghost-sm" onclick="reloadProfileFileTree()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-                  Refresh
-                </button>
-                <button class="btn-ghost-sm" onclick="createNewProfileFolder()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                  New Folder
-                </button>
-                <button class="btn-ghost-sm" onclick="createNewProfileFile()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
-                  New File
-                </button>
-                <button class="btn-ghost-sm" onclick="window.mcpanel.openProfileFolder(currentProfileId)">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                  Open in Explorer
+                <div class="file-new-wrap">
+                  <button class="btn-ghost-sm btn-icon-sm" id="profile-file-new-btn" title="Create New" onclick="toggleFileNewMenu(event, 'profile')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                  </button>
+                  <div class="file-new-menu hidden" id="profile-file-new-menu">
+                    <button type="button" onclick="fileNewMenuPick('profile','file')">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+                      New File
+                    </button>
+                    <button type="button" onclick="fileNewMenuPick('profile','folder')">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                      New Folder
+                    </button>
+                  </div>
+                </div>
+                <button class="btn-ghost-sm btn-icon-sm" title="Open in Explorer" onclick="window.mcpanel.openProfileFolder(currentProfileId)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M13 19h-8a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v4"/><path d="M16 22l5 -5"/><path d="M21 21.5v-4.5h-4.5"/></svg>
                 </button>
               </div>
               <div class="file-list" id="profile-file-list"
@@ -805,7 +928,6 @@
               <div class="file-upload-section">
                 <div class="file-upload-header">
                   <span class="file-upload-title">Upload</span>
-                  <button class="btn-ghost-sm" onclick="document.getElementById('profile-file-upload-input').click()">Browse files</button>
                   <input type="file" id="profile-file-upload-input" multiple style="display:none" onchange="handleProfileFileInputChange(event)">
                 </div>
                 <div class="file-drop-zone" id="profile-file-drop-zone"
@@ -865,7 +987,7 @@
                     <input type="text" id="ps-desc" class="input" placeholder="Pre-configured server with economy plugins">
                   </div>
                   <div class="form-group full">
-                    <label>Restrict to Software <span class="label-hint">(optional — empty = any)</span></label>
+                    <label>Restrict to Software <span class="label-hint">(optional - empty = any)</span></label>
                     <div class="checkbox-group" id="ps-software-checks">
                       <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
                       <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
@@ -917,11 +1039,11 @@
               </div>
               <div class="setting-row">
                 <label>Created</label>
-                <span id="pd-created" class="mono" style="font-size:12px;color:var(--text-primary)">—</span>
+                <span id="pd-created" class="mono" style="font-size:12px;color:var(--text-primary)">-</span>
               </div>
               <div class="setting-row">
                 <label>ID</label>
-                <span id="pd-id" class="mono" style="font-size:11px;color:var(--text-muted);word-break:break-all">—</span>
+                <span id="pd-id" class="mono" style="font-size:11px;color:var(--text-muted);word-break:break-all">-</span>
               </div>
             </div>
           </div>
@@ -951,6 +1073,16 @@
               <span class="toggle-slider"></span>
             </label>
           </div>
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">Clear console on server start</div>
+              <div class="setting-desc">When enabled, the console log is cleared each time a server is started, hiding output from previous runs.</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="setting-clear-console-on-start" onchange="saveClearConsoleOnStart()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
         </div>
         <div class="settings-section">
           <h3>Java Detection</h3>
@@ -976,8 +1108,8 @@
               </button>
             </div>
             <div style="display:flex;flex-direction:column;gap:4px">
-              <span id="update-status-text" style="font-size:12px;color:var(--text-muted)">MCPanel: —</span>
-              <span id="cli-update-status-text" style="font-size:12px;color:var(--text-muted)">MCPanel-CLI: —</span>
+              <span id="update-status-text" style="font-size:12px;color:var(--text-muted)">MCPanel: -</span>
+              <span id="cli-update-status-text" style="font-size:12px;color:var(--text-muted)">MCPanel-CLI: -</span>
             </div>
           </div>
         </div>
@@ -994,16 +1126,28 @@
                 Update Now
               </button>
             </div>
-            <span id="buildtools-status-text" style="font-size:12px;color:var(--text-muted)">BuildTools: —</span>
+            <span id="buildtools-status-text" style="font-size:12px;color:var(--text-muted)">BuildTools: -</span>
           </div>
         </div>
         <div class="settings-section">
           <h3>Logs</h3>
-          <p class="section-desc">Open the MCPanel application log file to diagnose CLI errors or command output</p>
-          <button class="btn-sm" onclick="window.mcpanel.openAppLogs()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            View Logs
-          </button>
+          <p class="section-desc">MCPanel's own diagnostic log (CLI errors, install steps) - separate from each server's console log. The newest file is always latest.log.</p>
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">Log files to keep</div>
+              <div class="setting-desc">Oldest log files are deleted once this many accumulate.</div>
+            </div>
+            <div class="setting-controls">
+              <div class="input-suffix-wrap">
+                <input type="number" id="setting-max-log-files" min="1" max="100" value="10" onchange="saveMaxLogFiles()">
+                <span class="input-suffix">Logs</span>
+              </div>
+              <button class="btn-sm" onclick="window.mcpanel.openAppLogs()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                Open Logs
+              </button>
+            </div>
+          </div>
         </div>
         <div class="settings-section">
           <h3>Themes</h3>
@@ -1028,6 +1172,11 @@
             </button>
           </div>
           <div id="installed-themes-list"></div>
+        </div>
+        <div class="settings-section">
+          <h3>App Icon</h3>
+          <p class="section-desc">Choose the logo shown in the top-left corner of MCPanel. <strong>Auto</strong> follows the active theme's suggested icon.</p>
+          <div id="app-icon-picker" class="app-icon-picker"></div>
         </div>
         <div class="settings-section">
           <h3>Fonts</h3>
@@ -1069,7 +1218,7 @@
             </div>
           </div>
           <div class="font-preview" id="font-preview">
-            <div class="font-preview-display" id="font-preview-display">The quick brown fox — MCPanel Settings</div>
+            <div class="font-preview-display" id="font-preview-display">The quick brown fox - MCPanel Settings</div>
             <div class="font-preview-mono" id="font-preview-mono">server.jar  1234  0x1F  /config/paper.yml</div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px">
@@ -1174,7 +1323,7 @@
           <input type="text" id="cs-ram-custom" class="input" placeholder="e.g. 3G, 2048M" style="display:none;margin-top:6px">
         </div>
         <div class="form-group">
-          <label>Storage Limit <span class="label-hint">(optional — min 500MB, 2GB+ recommended)</span></label>
+          <label>Storage Limit <span class="label-hint">(optional - min 500MB, 2GB+ recommended)</span></label>
           <input type="text" id="cs-storage" class="input" placeholder="Unlimited">
         </div>
         <div class="form-group full">
@@ -1192,7 +1341,7 @@
         <div class="form-group full">
           <label>Profile <span class="label-hint">(optional)</span></label>
           <select id="cs-profile" class="input">
-            <option value="">— No profile (plain server) —</option>
+            <option value="">- No profile (plain server) -</option>
           </select>
           <div id="cs-profile-hint" class="field-hint"></div>
         </div>
@@ -1235,7 +1384,7 @@
           <input type="text" id="cp-desc" class="input" placeholder="Pre-configured survival server with economy plugins">
         </div>
         <div class="form-group full">
-          <label>Restrict to Software <span class="label-hint">(optional — leave empty for any)</span></label>
+          <label>Restrict to Software <span class="label-hint">(optional - leave empty for any)</span></label>
           <div class="checkbox-group" id="cp-software-checks">
             <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
             <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
@@ -1248,7 +1397,7 @@
           </div>
         </div>
         <div class="form-group full">
-          <label>Restrict to Versions <span class="label-hint">(optional — comma separated, e.g. 1.21.4,1.21.3)</span></label>
+          <label>Restrict to Versions <span class="label-hint">(optional - comma separated, e.g. 1.21.4,1.21.3)</span></label>
           <input type="text" id="cp-versions" class="input" placeholder="Leave empty for any version">
         </div>
       </div>
@@ -1279,18 +1428,21 @@
   </div>
 </div>
 
-<!-- Confirm Delete Modal -->
-<div class="modal-overlay hidden" id="modal-confirm-delete">
+<!-- Confirm Modal — shared by every destructive action (see confirmDialog()) -->
+<div class="modal-overlay hidden" id="modal-confirm">
   <div class="modal small">
     <div class="modal-header">
-      <h2>Delete Server</h2>
+      <h2 id="confirm-title">Confirm</h2>
+      <button class="modal-close" onclick="resolveConfirmDialog(false)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
     </div>
     <div class="modal-body">
-      <p class="danger-text">This will permanently delete the server and all its files. This action cannot be undone.</p>
+      <p class="danger-text confirm-message" id="confirm-message"></p>
     </div>
     <div class="modal-footer">
-      <button class="btn-ghost" onclick="closeModal('modal-confirm-delete')">Cancel</button>
-      <button class="btn-danger" onclick="executeDeleteServer()">Delete Server</button>
+      <button class="btn-ghost" onclick="resolveConfirmDialog(false)">Cancel</button>
+      <button class="btn-danger" id="confirm-ok" onclick="resolveConfirmDialog(true)">Delete</button>
     </div>
   </div>
 </div>
@@ -1362,7 +1514,7 @@
           <input type="text" id="ip-desc" class="input" placeholder="">
         </div>
         <div class="form-group full">
-          <label>Restrict to Software <span class="label-hint">(optional — leave empty for any)</span></label>
+          <label>Restrict to Software <span class="label-hint">(optional - leave empty for any)</span></label>
           <div class="checkbox-group" id="ip-software-checks">
             <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
             <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
@@ -1375,7 +1527,7 @@
           </div>
         </div>
         <div class="form-group full">
-          <label>Restrict to Versions <span class="label-hint">(optional — comma separated)</span></label>
+          <label>Restrict to Versions <span class="label-hint">(optional - comma separated)</span></label>
           <input type="text" id="ip-versions" class="input" placeholder="Leave empty for any version">
         </div>
       </div>
@@ -1650,7 +1802,7 @@
           <input type="text" id="pfs-desc" class="input" placeholder="">
         </div>
         <div class="form-group full">
-          <label>Restrict to Software <span class="label-hint">(optional — leave empty for any)</span></label>
+          <label>Restrict to Software <span class="label-hint">(optional - leave empty for any)</span></label>
           <div class="checkbox-group" id="pfs-software-checks">
             <label class="checkbox-item"><input type="checkbox" value="paper"> Paper</label>
             <label class="checkbox-item"><input type="checkbox" value="purpur"> Purpur</label>
@@ -1663,7 +1815,7 @@
           </div>
         </div>
         <div class="form-group full">
-          <label>Restrict to Versions <span class="label-hint">(optional — comma separated, e.g. 1.21.4,1.21.3)</span></label>
+          <label>Restrict to Versions <span class="label-hint">(optional - comma separated, e.g. 1.21.4,1.21.3)</span></label>
           <input type="text" id="pfs-versions" class="input" placeholder="Leave empty for any version">
         </div>
       </div>
@@ -1705,6 +1857,28 @@
     <div class="modal-footer">
       <button class="btn-ghost" onclick="closeModal('modal-file-input')">Cancel</button>
       <button class="btn-primary" id="file-input-ok" onclick="submitFileInput()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move To Modal (destination folder picker) -->
+<div class="modal-overlay hidden" id="modal-file-move">
+  <div class="modal small">
+    <div class="modal-header">
+      <h2 id="file-move-title">Move Items</h2>
+      <button class="modal-close" onclick="closeModal('modal-file-move')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group full">
+        <label>Destination folder</label>
+        <div class="file-move-tree" id="file-move-tree"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-file-move')">Cancel</button>
+      <button class="btn-primary" id="file-move-ok" onclick="submitFileMove()">Move Here</button>
     </div>
   </div>
 </div>
@@ -1784,7 +1958,7 @@
     <div class="terminal-modal-header">
       <span class="terminal-modal-title">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-        Terminal — MCPanel
+        Terminal - MCPanel
       </span>
       <button class="terminal-close-btn" onclick="closeTerminal()">×</button>
     </div>

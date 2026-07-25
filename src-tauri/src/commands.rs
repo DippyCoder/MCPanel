@@ -68,23 +68,8 @@ fn mcpanel_themes_dir() -> String {
     format!("{}/themes", mcpanel_home())
 }
 
-fn app_log_path() -> String {
-    format!("{}/mcpanel-app.log", mcpanel_home())
-}
-
-fn log_to_file(line: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(app_log_path())
-    {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let _ = writeln!(f, "[{}] {}", ts, line);
-    }
+fn app_logs_dir() -> String {
+    format!("{}/logs", mcpanel_home())
 }
 
 // ─── CLI runner ───────────────────────────────────────────────────────────────
@@ -296,13 +281,14 @@ pub async fn check_cli() -> Value {
     let cli_path = match find_cli_path() {
         Some(p) => p,
         None => {
+            crate::app_log::warn("check_cli: MCPanel-CLI not found on this system");
             return serde_json::json!({
                 "ok": false,
                 "error": "mcpanel CLI not found. Install it from https://github.com/DippyCoder/mcpanel-cli"
             });
         }
     };
-    log_to_file(&format!("check_cli: found CLI at {}", cli_path.display()));
+    crate::app_log::info(format!("check_cli: found CLI at {}", cli_path.display()));
 
     // STEP 2 — the CLI exists, so detection already succeeded (ok:true). Reading
     // the version is best-effort enrichment for the UI. Because we exec the
@@ -320,6 +306,7 @@ pub async fn check_cli() -> Value {
                 .ok()
                 .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
             {
+                crate::app_log::note_cli_version(&v);
                 result["version"] = Value::String(v);
             }
         }
@@ -332,7 +319,12 @@ pub async fn check_cli() -> Value {
 pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     let mut argv = vec!["api".to_string()];
     argv.extend(args);
-    log_to_file(&format!("run_cli: mcpanel {}", argv.join(" ")));
+    // Status/file-tree polling happens every few seconds per server and is
+    // noise when it's succeeding — only worth a log line when it fails.
+    let is_fetch = argv.get(1).map(|s| s == "fetch").unwrap_or(false);
+    if !is_fetch {
+        crate::app_log::info(format!("run_cli: mcpanel {}", argv.join(" ")));
+    }
 
     let out = mcpanel_cmd()
         .args(&argv)
@@ -342,10 +334,16 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if stdout.is_empty() && !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        log_to_file(&format!("  error: {}", stderr));
+        if is_fetch {
+            crate::app_log::error(format!("run_cli: mcpanel {} failed: {}", argv.join(" "), stderr));
+        } else {
+            crate::app_log::error(format!("  error: {}", stderr));
+        }
         return Err(stderr);
     }
-    log_to_file(&format!("  ok ({} bytes)", stdout.len()));
+    if !is_fetch {
+        crate::app_log::info(format!("  ok ({} bytes)", stdout.len()));
+    }
     Ok(stdout)
 }
 
@@ -424,6 +422,14 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
         .ok_or("Server not found")?;
 
     if let Some(obj) = updates.as_object() {
+        let fields: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        if !fields.is_empty() {
+            let name = srv["name"].as_str().unwrap_or(&id);
+            crate::app_log::info(format!(
+                "Updated server \"{}\" ({}) -id {}",
+                name, fields.join(", "), id
+            ));
+        }
         for (k, v) in obj {
             srv[k] = v.clone();
         }
@@ -711,7 +717,7 @@ pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, 
 
     let mut argv = vec!["api".into(), "create".into(), "server".into()];
     argv.extend(args);
-    log_to_file(&format!("create_server: mcpanel {}", argv.join(" ")));
+    crate::app_log::info(format!("create_server: mcpanel {}", argv.join(" ")));
 
     // Slow fake progress ticker while CLI runs
     let app2 = app.clone();
@@ -748,10 +754,10 @@ pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, 
 
     if stdout.is_empty() && !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        log_to_file(&format!("  error: {}", stderr));
+        crate::app_log::error(format!("  error: {}", stderr));
         return Err(stderr);
     }
-    log_to_file(&format!("  ok ({} bytes)", stdout.len()));
+    crate::app_log::info(format!("  ok ({} bytes)", stdout.len()));
     Ok(stdout)
 }
 
@@ -1382,7 +1388,7 @@ pub async fn install_cli() -> Result<String, String> {
         { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
         match cmd.output().await {
             Ok(o) if o.status.success() => {
-                log_to_file("install_cli: mcpanel-cli installed from GitHub zip");
+                crate::app_log::info("install_cli: mcpanel-cli installed from GitHub zip");
 
                 // On Windows, pip --user installs to a Scripts dir that isn't on PATH
                 // by default. Ask the same Python interpreter where it put the scripts,
@@ -1417,7 +1423,7 @@ pub async fn install_cli() -> Result<String, String> {
                                        "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
                                 .creation_flags(0x08000000)
                                 .output().await;
-                            log_to_file(&format!("install_cli: added {} to PATH", scripts));
+                            crate::app_log::info(format!("install_cli: added {} to PATH", scripts));
                         }
                     }
                 }
@@ -1500,6 +1506,26 @@ pub fn open_terminal() -> Result<(), String> {
 
 // ─── Drag-drop upload (Tauri intercepts OS drops, gives us paths) ─────────────
 
+// Copies a single dropped path into dst, recursing into directories so a
+// dragged folder (and its contents) lands intact rather than being silently
+// skipped. src_paths from a multi-select OS drop are handled by the caller
+// looping this per path.
+fn copy_dropped_path(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_dropped_path(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else if src.is_file() {
+        std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub fn upload_files_to_server(id: String, src_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
     if !dest_dir.is_empty() && (dest_dir.contains("..") || dest_dir.starts_with('/')) {
@@ -1511,12 +1537,81 @@ pub fn upload_files_to_server(id: String, src_paths: Vec<String>, dest_dir: Stri
     std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
     for src_path in &src_paths {
         let src = std::path::Path::new(src_path);
-        if src.is_file() {
-            if let Some(name) = src.file_name() {
-                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
-            }
+        if let Some(name) = src.file_name() {
+            copy_dropped_path(src, &dest_base.join(name))?;
         }
     }
+    crate::app_log::info(format!(
+        "Uploaded {} item(s) to server{} -id {}",
+        src_paths.len(),
+        if dest_dir.is_empty() { String::new() } else { format!(" (/{})", dest_dir) },
+        id
+    ));
+    Ok(())
+}
+
+// ─── Export (download to an OS folder) ───────────────────────────────────────
+
+// Picks a non-colliding name inside dest for `name`: "world" -> "world (1)".
+// The export target is a user folder we don't own, so silently overwriting
+// (or merging into) whatever is already there would be destructive.
+fn unique_export_path(dest: &std::path::Path, name: &std::ffi::OsStr) -> std::path::PathBuf {
+    let first = dest.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let name = name.to_string_lossy();
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{}", e)),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 1..1000 {
+        let candidate = dest.join(format!("{} ({}){}", stem, n, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
+fn export_paths(base: &std::path::Path, rel_paths: &[String], dest_dir: &str) -> Result<(), String> {
+    let dest = std::path::Path::new(dest_dir);
+    if !dest.is_dir() {
+        return Err("Destination folder not found".into());
+    }
+    for rel in rel_paths {
+        if rel.contains("..") || rel.starts_with('/') {
+            return Err("Invalid path".into());
+        }
+        let src = base.join(rel);
+        if !src.exists() {
+            return Err(format!("Not found: {}", rel));
+        }
+        let Some(name) = src.file_name() else { continue };
+        copy_dropped_path(&src, &unique_export_path(dest, name))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_server_files(id: String, rel_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    let server_dir = get_server_dir(&id)?;
+    export_paths(std::path::Path::new(&server_dir), &rel_paths, &dest_dir)?;
+    crate::app_log::info(format!(
+        "Downloaded {} item(s) from server -id {} to {}",
+        rel_paths.len(), id, dest_dir
+    ));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_profile_files(id: String, rel_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    let profile_dir = get_profile_dir(&id)?;
+    export_paths(std::path::Path::new(&profile_dir), &rel_paths, &dest_dir)?;
+    crate::app_log::info(format!(
+        "Downloaded {} item(s) from profile -id {} to {}",
+        rel_paths.len(), id, dest_dir
+    ));
     Ok(())
 }
 
@@ -1753,12 +1848,16 @@ pub fn upload_files_to_profile(id: String, src_paths: Vec<String>, dest_dir: Str
     std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
     for src_path in &src_paths {
         let src = std::path::Path::new(src_path);
-        if src.is_file() {
-            if let Some(name) = src.file_name() {
-                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
-            }
+        if let Some(name) = src.file_name() {
+            copy_dropped_path(src, &dest_base.join(name))?;
         }
     }
+    crate::app_log::info(format!(
+        "Uploaded {} item(s) to profile{} -id {}",
+        src_paths.len(),
+        if dest_dir.is_empty() { String::new() } else { format!(" (/{})", dest_dir) },
+        id
+    ));
     Ok(())
 }
 
@@ -1766,7 +1865,18 @@ pub fn upload_files_to_profile(id: String, src_paths: Vec<String>, dest_dir: Str
 
 #[tauri::command]
 pub fn get_app_log_path() -> String {
-    app_log_path()
+    app_logs_dir()
+}
+
+// Lets the frontend record UI-level events (opening a server's panel, etc.)
+// that have no natural Rust command of their own to hang a log line off of.
+#[tauri::command]
+pub fn log_event(level: String, message: String) {
+    match level.as_str() {
+        "warn" => crate::app_log::warn(message),
+        "error" => crate::app_log::error(message),
+        _ => crate::app_log::info(message),
+    }
 }
 
 // ─── Server start time (reads run/<id>.json directly, no CLI round-trip) ─────
@@ -1912,11 +2022,32 @@ pub fn save_app_settings(settings: Value) -> Value {
     if let Err(e) = std::fs::create_dir_all(&home) {
         return serde_json::json!({"error": e.to_string()});
     }
+
+    let old = std::fs::read_to_string(app_settings_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let changed = changed_setting_keys(old.as_ref(), &settings);
+    if !changed.is_empty() {
+        crate::app_log::info(format!("Settings updated: {}", changed.join(", ")));
+    }
+
     let json = serde_json::to_string_pretty(&settings).unwrap_or_default();
     match std::fs::write(app_settings_path(), json) {
         Ok(_) => serde_json::json!({"success": true}),
         Err(e) => serde_json::json!({"error": e.to_string()}),
     }
+}
+
+// Names only, not values — some settings (fonts, etc.) are nested objects
+// that would be noisy to log in full.
+fn changed_setting_keys(old: Option<&Value>, new: &Value) -> Vec<String> {
+    let Some(new_obj) = new.as_object() else { return vec![] };
+    let old_obj = old.and_then(|v| v.as_object());
+    new_obj
+        .iter()
+        .filter(|(k, v)| old_obj.and_then(|o| o.get(k.as_str())) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 
 #[tauri::command]
@@ -2090,41 +2221,72 @@ fn read_velocity_secret_str(velocity_dir: &str) -> Option<String> {
 
 fn update_velocity_toml(contents: &str, server_name: &str, address: &str, priority: u64) -> Result<String, String> {
     let lines: Vec<&str> = contents.lines().collect();
-    let (try_start, try_end, mut entries) = find_velocity_try_array(&lines)
-        .ok_or("Could not find try = [...] in [servers] section of velocity.toml")?;
 
-    let server_entry_exists = lines.iter().any(|l| {
-        let t = l.trim();
-        t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
-    });
+    if let Some((try_start, try_end, mut entries)) = find_velocity_try_array(&lines) {
+        let server_entry_exists = lines.iter().any(|l| {
+            let t = l.trim();
+            t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
+        });
 
-    if !entries.contains(&server_name.to_string()) {
-        let pos = (priority as usize).min(entries.len());
-        entries.insert(pos, server_name.to_string());
-    }
-
-    let try_line = format!(
-        "try = [{}]",
-        entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
-    );
-
-    let mut result = String::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if i == try_start {
-            if !server_entry_exists {
-                result.push_str(&format!("{} = \"{}\"\n", server_name, address));
-            }
-            result.push_str(&try_line);
-            result.push('\n');
-            i = try_end + 1;
-            continue;
+        if !entries.contains(&server_name.to_string()) {
+            let pos = (priority as usize).min(entries.len());
+            entries.insert(pos, server_name.to_string());
         }
-        result.push_str(lines[i]);
-        result.push('\n');
-        i += 1;
+
+        let try_line = format!(
+            "try = [{}]",
+            entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
+        );
+
+        let mut result = String::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if i == try_start {
+                if !server_entry_exists {
+                    result.push_str(&format!("{} = \"{}\"\n", server_name, address));
+                }
+                result.push_str(&try_line);
+                result.push('\n');
+                i = try_end + 1;
+                continue;
+            }
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+        return Ok(result);
     }
-    Ok(result)
+
+    // No [servers]/try = [...] found. This is expected (not an error) when Velocity
+    // has never been started: velocity.toml only gets its full default template —
+    // including the [servers] section — merged in by Velocity's own config loader
+    // on first run. mcpanel-cli's initial velocity.toml (written at server-creation
+    // time, before the jar has ever executed) only contains a `bind = "..."` line.
+    // Rather than failing the link, create the section ourselves.
+    let entry_line = format!("{} = \"{}\"", server_name, address);
+    let try_line = format!("try = [\"{}\"]", server_name);
+
+    if let Some(idx) = lines.iter().position(|l| l.trim() == "[servers]") {
+        let mut result = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            result.push_str(line);
+            result.push('\n');
+            if i == idx {
+                result.push_str(&entry_line);
+                result.push('\n');
+                result.push_str(&try_line);
+                result.push('\n');
+            }
+        }
+        Ok(result)
+    } else {
+        let mut result = contents.trim_end().to_string();
+        if !result.is_empty() {
+            result.push_str("\n\n");
+        }
+        result.push_str(&format!("[servers]\n{}\n{}\n", entry_line, try_line));
+        Ok(result)
+    }
 }
 
 fn ensure_velocity_forwarding_modern(contents: &str) -> String {
@@ -2244,6 +2406,16 @@ pub fn link_to_proxy(
         _ => format!("127.0.0.1:{}", port),
     };
 
+    // The forwarding secret (and the [servers]/try = [...] section handled below)
+    // only exist once Velocity has generated its full config, which happens on its
+    // own first run — not at server-creation time. Check this up front: without a
+    // real secret, linking would "succeed" but leave modern forwarding silently
+    // broken (empty secret in paper-global.yml).
+    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
+    if secret.is_empty() {
+        return serde_json::json!({"error": "This Velocity proxy hasn't been started yet, so it hasn't generated its forwarding secret. Start it once, then try linking again."});
+    }
+
     // Update velocity.toml
     let toml_path = format!("{}/velocity.toml", velocity_dir);
     let toml_contents = match std::fs::read_to_string(&toml_path) {
@@ -2280,7 +2452,6 @@ pub fn link_to_proxy(
     }
 
     // Update paper-global.yml with forwarding secret
-    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
     let paper_global_path = format!("{}/config/paper-global.yml", paper_dir);
     if let Ok(paper_global) = std::fs::read_to_string(&paper_global_path) {
         let updated = update_paper_global_yml(&paper_global, &secret);

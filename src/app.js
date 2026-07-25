@@ -6,8 +6,11 @@ let config = { servers: [], jdkPaths: [] };
 let profiles = [];
 let currentServerId = null;
 let systemInfo = { totalRam: null, availableStorage: null, totalStorage: null };
+// Host-CPU facts, cached from getSystemStats — used for the detail CPU sub.
+let systemCpu = { threads: null, cores: null, freqMhz: null, name: null };
 let versionCache = {};
 let statusPollInterval = null;
+let statusFetchRetryAt = {};   // server id -> ms timestamp to resume polling after a fetch error
 let uptimeInterval = null;
 let sidebarStatsInterval = null;
 let commandHistory = [];
@@ -21,12 +24,16 @@ let consolePollInterval = null;
 let detailStatsInterval = null;
 let selectedFilePaths = new Set();
 let serverPlayerData = {};
+let serversSortBy = localStorage.getItem('mcpanel-servers-sort') || 'name';
+let profilesSortBy = localStorage.getItem('mcpanel-profiles-sort') || 'name';
+let serversSortReversed = localStorage.getItem('mcpanel-servers-sort-dir') === '1';
+let profilesSortReversed = localStorage.getItem('mcpanel-profiles-sort-dir') === '1';
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   config = await window.mcpanel.getConfig();
   window.mcpanel.getSystemInfo().then(info => { systemInfo = info; });
-  loadAppSettings();
+  await loadAppSettings();
 
   // Ensure built-in themes are installed to user themes dir
   await ensureBuiltinThemes();
@@ -47,6 +54,9 @@ async function init() {
   if (config.activeTheme !== defaultThemeId) {
     document.getElementById('reset-theme-btn').style.display = '';
   }
+  // Titlebar logo (respects the theme's --app-icon when on Auto)
+  applyAppIcon();
+  renderAppIconPicker();
 
   window.mcpanel.getVersion().then(v => {
     const el = document.getElementById('about-version');
@@ -54,6 +64,12 @@ async function init() {
   });
 
   profiles = await window.mcpanel.getProfiles();
+  const serversSortSel = document.getElementById('servers-sort');
+  if (serversSortSel) serversSortSel.value = serversSortBy;
+  const profilesSortSel = document.getElementById('profiles-sort');
+  if (profilesSortSel) profilesSortSel.value = profilesSortBy;
+  _setSortDirBtnState('servers-sort-dir-btn', serversSortReversed);
+  _setSortDirBtnState('profiles-sort-dir-btn', profilesSortReversed);
   renderServersGrid();
   renderSidebarServers();
   startStatusPolling();
@@ -70,12 +86,12 @@ async function init() {
     startingServers.delete(id);
     delete serverStartTimes[id];
     const uptimeEl = document.getElementById(`uptime-${id}`);
-    if (uptimeEl) uptimeEl.textContent = '—';
+    if (uptimeEl) uptimeEl.textContent = '-';
     if (id === currentServerId) {
       appendConsoleLine('Server stopped.', 'system');
       updateDetailControls(false);
       const detailUptime = document.getElementById('detail-uptime');
-      if (detailUptime) detailUptime.textContent = '—';
+      if (detailUptime) detailUptime.textContent = '-';
     }
     updateServerCardStatus(id, false, 0);
     updateSidebarDot(id, false);
@@ -140,14 +156,109 @@ async function loadAppSettings() {
   }
   const el = document.getElementById('setting-run-in-bg');
   if (el) el.checked = _appSettings.runInBackground !== false;
+  const clearEl = document.getElementById('setting-clear-console-on-start');
+  if (clearEl) clearEl.checked = _appSettings.clearConsoleOnStart === true;
+  const maxLogFilesEl = document.getElementById('setting-max-log-files');
+  if (maxLogFilesEl) maxLogFilesEl.value = _appSettings.maxLogFiles || 10;
   applyFontSettings(_appSettings.fonts || {});
   _syncFontSelects(_appSettings.fonts || {});
   populateFontLists(_appSettings.fonts || {});
+  renderAppIconPicker();
 }
 
 async function saveRunInBackground() {
   _appSettings.runInBackground = document.getElementById('setting-run-in-bg').checked;
   await window.mcpanel.saveAppSettings(_appSettings);
+}
+
+async function saveClearConsoleOnStart() {
+  _appSettings.clearConsoleOnStart = document.getElementById('setting-clear-console-on-start').checked;
+  await window.mcpanel.saveAppSettings(_appSettings);
+}
+
+async function saveMaxLogFiles() {
+  const el = document.getElementById('setting-max-log-files');
+  const n = Math.max(1, Math.min(100, parseInt(el.value, 10) || 10));
+  el.value = n;
+  _appSettings.maxLogFiles = n;
+  await window.mcpanel.saveAppSettings(_appSettings);
+}
+
+// ─── App Icon ─────────────────────────────────────────────────────────────────
+// Swaps the in-app titlebar logo (top-left corner) between bundled variants.
+// This is purely an in-app HTML image — it does NOT touch the native OS window/
+// taskbar icon (that's owned by the .desktop file / platform).
+// Resolution order: explicit user choice in Settings > theme's `--app-icon` hint
+// > default.
+const APP_ICONS = [
+  { key: 'default',       label: 'Default' },
+  { key: 'blue',          label: 'Blue' },
+  { key: 'green',         label: 'Green' },
+  { key: 'red',           label: 'Red' },
+  { key: 'yellow',        label: 'Yellow' },
+  { key: 'black',         label: 'Black' },
+  { key: 'white',         label: 'White' },
+  { key: 'outline',       label: 'Outline' },
+  { key: 'outline-white', label: 'Outline White' },
+];
+const APP_ICON_KEYS = APP_ICONS.map(i => i.key);
+
+function _iconAssetPath(key) {
+  return key === 'default' ? 'assets/icons/icon.png' : `assets/icons/icon-${key}.png`;
+}
+
+// Icon suggested by the active theme via `:root { --app-icon: <key>; }`.
+// Returns '' when the theme doesn't specify one.
+function themeSuggestedIcon() {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue('--app-icon').trim().replace(/['"]/g, '');
+  return APP_ICON_KEYS.includes(raw) ? raw : '';
+}
+
+// The icon that should actually be shown right now.
+function resolveAppIcon() {
+  const choice = _appSettings.appIcon || 'auto';
+  if (choice !== 'auto' && APP_ICON_KEYS.includes(choice)) return choice;
+  return themeSuggestedIcon() || 'default';
+}
+
+function applyAppIcon() {
+  const img = document.getElementById('titlebar-logo-img');
+  if (img) img.src = _iconAssetPath(resolveAppIcon());
+}
+
+function renderAppIconPicker() {
+  const container = document.getElementById('app-icon-picker');
+  if (!container) return;
+  const choice = _appSettings.appIcon || 'auto';
+  const themed = themeSuggestedIcon();
+
+  const autoResolved = themed || 'default';
+  const opts = [
+    {
+      key: 'auto',
+      label: 'Auto',
+      hint: `Theme: ${APP_ICONS.find(i => i.key === autoResolved)?.label || 'Default'}`,
+      preview: _iconAssetPath(autoResolved),
+    },
+    ...APP_ICONS.map(i => ({ key: i.key, label: i.label, hint: '', preview: _iconAssetPath(i.key) })),
+  ];
+
+  container.innerHTML = opts.map(o => `
+    <button class="app-icon-option${choice === o.key ? ' selected' : ''}"
+            onclick="selectAppIcon('${o.key}')" title="${escapeHtml(o.label)}">
+      <img src="${o.preview}" alt="" width="32" height="32">
+      <span class="app-icon-option-label">${escapeHtml(o.label)}</span>
+      ${o.hint ? `<span class="app-icon-option-hint">${escapeHtml(o.hint)}</span>` : ''}
+    </button>
+  `).join('');
+}
+
+async function selectAppIcon(key) {
+  _appSettings.appIcon = key;
+  await window.mcpanel.saveAppSettings(_appSettings);
+  applyAppIcon();
+  renderAppIconPicker();
 }
 
 // ─── Window Close ─────────────────────────────────────────────────────────────
@@ -190,6 +301,7 @@ function openServerDetail(id) {
   switchDetailTab('console');
   const srv = config.servers.find(s => s.id === id);
   if (!srv) return;
+  window.mcpanel.logEvent(`Opened server panel: ${srv.name} -id ${id}`);
 
   document.querySelectorAll('.sidebar-server-item').forEach(el => el.classList.remove('active'));
   const sidebarItem = document.querySelector(`[data-server-id="${id}"]`);
@@ -206,6 +318,7 @@ function openServerDetail(id) {
   document.getElementById('dtab-plugins-label').textContent = _pluginTabLabel(srv.software);
   document.getElementById('detail-port').textContent = srv.port;
   setRamBar(0, srv.ram);
+  setCpuGauge(null, false);
 
   // Quick settings
   document.getElementById('quick-port').value = srv.port;
@@ -250,7 +363,7 @@ function openServerDetail(id) {
   // Initialise uptime display
   const detailUptime = document.getElementById('detail-uptime');
   if (detailUptime) {
-    detailUptime.textContent = serverStartTimes[id] ? formatUptime(Date.now() - serverStartTimes[id]) : '—';
+    detailUptime.textContent = serverStartTimes[id] ? formatUptime(Date.now() - serverStartTimes[id]) : '-';
   }
 
   // Storage stats — load immediately then refresh every 5 s
@@ -266,6 +379,74 @@ async function refreshDetailStats(id) {
   const result = await window.mcpanel.getServerDirStats(id);
   setStorageBar(result.size, srv.storageLimit);
   setRamBar(result.ramBytes || 0, srv.ram);
+  const online = result.cpuPct != null;
+  setCpuGauge(online ? result.cpuPct : null, online);
+}
+
+// ─── Sorting ───────────────────────────────────────────────────────────────────
+function onServersSortChange() {
+  serversSortBy = document.getElementById('servers-sort').value;
+  localStorage.setItem('mcpanel-servers-sort', serversSortBy);
+  renderServersGrid();
+}
+
+function onProfilesSortChange() {
+  profilesSortBy = document.getElementById('profiles-sort').value;
+  localStorage.setItem('mcpanel-profiles-sort', profilesSortBy);
+  renderProfilesGrid();
+}
+
+function _setSortDirBtnState(btnId, reversed) {
+  const btn = document.getElementById(btnId);
+  if (btn) btn.classList.toggle('reversed', reversed);
+}
+
+function onServersSortDirToggle() {
+  serversSortReversed = !serversSortReversed;
+  localStorage.setItem('mcpanel-servers-sort-dir', serversSortReversed ? '1' : '0');
+  _setSortDirBtnState('servers-sort-dir-btn', serversSortReversed);
+  renderServersGrid();
+}
+
+function onProfilesSortDirToggle() {
+  profilesSortReversed = !profilesSortReversed;
+  localStorage.setItem('mcpanel-profiles-sort-dir', profilesSortReversed ? '1' : '0');
+  _setSortDirBtnState('profiles-sort-dir-btn', profilesSortReversed);
+  renderProfilesGrid();
+}
+
+function sortServers(list) {
+  const sign = serversSortReversed ? -1 : 1;
+  const sorted = [...list];
+  if (serversSortBy === 'created') {
+    sorted.sort((a, b) => sign * ((b.created || 0) - (a.created || 0)));
+  } else if (serversSortBy === 'lastBoot') {
+    sorted.sort((a, b) => sign * ((b.lastBoot || 0) - (a.lastBoot || 0)));
+  } else {
+    sorted.sort((a, b) => sign * a.name.localeCompare(b.name));
+  }
+  return sorted;
+}
+
+function sortProfiles(list) {
+  const sign = profilesSortReversed ? -1 : 1;
+  const sorted = [...list];
+  if (profilesSortBy === 'created') {
+    sorted.sort((a, b) => sign * ((b.created || 0) - (a.created || 0)));
+  } else if (profilesSortBy === 'lastBoot') {
+    // Profiles don't boot themselves — sort by the most recent boot among
+    // the servers currently using each profile ("last used").
+    const lastUsed = {};
+    (config.servers || []).forEach(s => {
+      if (!s.profileId) return;
+      const t = s.lastBoot || 0;
+      if (t > (lastUsed[s.profileId] || 0)) lastUsed[s.profileId] = t;
+    });
+    sorted.sort((a, b) => sign * ((lastUsed[b.id] || 0) - (lastUsed[a.id] || 0)));
+  } else {
+    sorted.sort((a, b) => sign * a.name.localeCompare(b.name));
+  }
+  return sorted;
 }
 
 // ─── Servers Grid ─────────────────────────────────────────────────────────────
@@ -281,14 +462,14 @@ function renderServersGrid() {
   }
   if (empty) empty.classList.add('hidden');
 
-  const servers = query
+  const servers = sortServers(query
     ? config.servers.filter(s =>
         s.name.toLowerCase().includes(query) ||
         (s.group || '').toLowerCase().includes(query) ||
         s.software.toLowerCase().includes(query) ||
         s.version.toLowerCase().includes(query)
       )
-    : config.servers;
+    : config.servers);
 
   if (servers.length === 0) {
     const msg = document.createElement('div');
@@ -360,7 +541,7 @@ function createServerCard(srv) {
       </div>
       <div class="stat-chip">
         <div class="stat-chip-label">Players</div>
-        <div class="stat-chip-value" id="players-${srv.id}">—</div>
+        <div class="stat-chip-value" id="players-${srv.id}">-</div>
       </div>
       <div class="stat-chip">
         <div class="stat-chip-label">Storage</div>
@@ -368,7 +549,7 @@ function createServerCard(srv) {
       </div>
       <div class="stat-chip">
         <div class="stat-chip-label">Uptime</div>
-        <div class="stat-chip-value" id="uptime-${srv.id}">—</div>
+        <div class="stat-chip-value" id="uptime-${srv.id}">-</div>
       </div>
     </div>
     <div class="server-card-footer">
@@ -406,7 +587,7 @@ function updateServerCardStatus(id, online, players) {
       badge.textContent = 'OFFLINE';
     }
   }
-  if (playersEl) playersEl.textContent = online === true ? players : '—';
+  if (playersEl) playersEl.textContent = online === true ? players : '-';
   if (startBtn) startBtn.style.display = online ? 'none' : '';
   if (stopBtn) stopBtn.style.display = online ? '' : 'none';
 }
@@ -510,8 +691,19 @@ function startStatusPolling() {
 }
 
 async function pollAllStatuses() {
+  const now = Date.now();
   for (const srv of config.servers) {
-    const running = await window.mcpanel.isServerRunning(srv.id);
+    if (statusFetchRetryAt[srv.id] && now < statusFetchRetryAt[srv.id]) continue;
+    let running;
+    try {
+      running = await window.mcpanel.isServerRunning(srv.id);
+      delete statusFetchRetryAt[srv.id];
+    } catch (e) {
+      // Back off this server for a minute instead of hammering a broken
+      // CLI/fetch path every 5s — errors already get logged on the Rust side.
+      statusFetchRetryAt[srv.id] = now + 60000;
+      continue;
+    }
     if (running) {
       const status = await window.mcpanel.pingServer('127.0.0.1', parseInt(srv.port));
       if (status && status.players != null) {
@@ -538,10 +730,10 @@ async function pollAllStatuses() {
       if (serverStartTimes[srv.id]) {
         delete serverStartTimes[srv.id];
         const uptimeEl = document.getElementById(`uptime-${srv.id}`);
-        if (uptimeEl) uptimeEl.textContent = '—';
+        if (uptimeEl) uptimeEl.textContent = '-';
         if (currentServerId === srv.id) {
           const detailUptime = document.getElementById('detail-uptime');
-          if (detailUptime) detailUptime.textContent = '—';
+          if (detailUptime) detailUptime.textContent = '-';
         }
       }
       updateServerCardStatus(srv.id, false, 0);
@@ -550,6 +742,8 @@ async function pollAllStatuses() {
         updateDetailControls(false);
         setRamBar(0, srv.ram);
         setPlayersBar(0, 0, false);
+        setCpuGauge(null, false);
+        currentOnlinePlayers = [];
       }
     }
   }
@@ -558,6 +752,20 @@ async function pollAllStatuses() {
 
 // ─── EULA Flow ────────────────────────────────────────────────────────────────
 async function startServerFlow(id) {
+  // Log polling reads incrementally from consoleLogOffset, but that offset
+  // sits at 0 while a server is stopped — so on start, the very next poll
+  // tick would pull the *entire* on-disk log (previous run included) into
+  // the console. Skip straight to the current end of the log before
+  // starting so only output from this run appears.
+  if (_appSettings.clearConsoleOnStart && currentServerId === id) {
+    stopConsolePoll();
+    try {
+      const tail = await window.mcpanel.getLogSince(id, 0);
+      consoleLogOffset = tail.offset || 0;
+    } catch {}
+    clearConsole();
+    startConsolePoll(id);
+  }
   const result = await window.mcpanel.startServer(id);
   if (result.needsEula) {
     pendingEulaServerId = id;
@@ -625,7 +833,7 @@ function updateDetailStarting() {
 // ─── Detail Tabs ─────────────────────────────────────────────────────────────
 
 function switchDetailTab(name) {
-  ['console', 'files', 'plugins', 'settings', 'backups', 'schedule'].forEach(t => {
+  ['console', 'files', 'plugins', 'settings', 'backups', 'schedule', 'players'].forEach(t => {
     document.getElementById(`dtab-${t}`).classList.toggle('active', t === name);
     document.getElementById(`pane-${t}`).classList.toggle('hidden', t !== name);
   });
@@ -634,6 +842,7 @@ function switchDetailTab(name) {
   if (name === 'plugins') openServerPluginsTab();
   if (name === 'backups') openBackupsTab();
   if (name === 'schedule') openScheduleTab();
+  if (name === 'players') openPlayersTab();
 }
 
 // ─── File Browser ─────────────────────────────────────────────────────────────
@@ -641,6 +850,42 @@ function switchDetailTab(name) {
 let fileNavStack = [];   // stack of children arrays
 let fileNavPaths = [];   // stack of name strings for breadcrumb
 let cachedFileTree = null;
+
+// "New" toolbar button — a lightweight popover (not a real <select>/<dialog>)
+// listing File/Folder. Click the button again, pick an option, or click
+// anywhere else to close it.
+let _openFileNewMenuId = null;
+
+function toggleFileNewMenu(e, scope) {
+  e.stopPropagation();
+  const menuId = scope === 'profile' ? 'profile-file-new-menu' : 'file-new-menu';
+  const wasOpen = menuId === _openFileNewMenuId;
+  closeFileNewMenu();
+  if (!wasOpen) {
+    document.getElementById(menuId)?.classList.remove('hidden');
+    _openFileNewMenuId = menuId;
+  }
+}
+
+function closeFileNewMenu() {
+  if (_openFileNewMenuId) {
+    document.getElementById(_openFileNewMenuId)?.classList.add('hidden');
+    _openFileNewMenuId = null;
+  }
+}
+
+document.addEventListener('click', e => {
+  if (_openFileNewMenuId && !e.target.closest('.file-new-wrap')) closeFileNewMenu();
+});
+
+function fileNewMenuPick(scope, kind) {
+  closeFileNewMenu();
+  if (scope === 'profile') {
+    if (kind === 'file') createNewProfileFile(); else createNewProfileFolder();
+  } else {
+    if (kind === 'file') createNewFile(); else createNewFolder();
+  }
+}
 
 async function openFilesTab() {
   if (!currentServerId) return;
@@ -674,7 +919,6 @@ function renderFileBrowser() {
   const children = fileNavStack[fileNavStack.length - 1];
   const listEl = document.getElementById('file-list');
   const bcEl = document.getElementById('file-breadcrumb');
-  const upBtn = document.getElementById('file-up-btn');
 
   // Breadcrumb — show server ID (folder name) not the display name
   const parts = [currentServerId, ...fileNavPaths];
@@ -689,8 +933,6 @@ function renderFileBrowser() {
       el.onclick = () => fileBrowserGoTo(depth);
     }
   });
-
-  upBtn.disabled = fileNavStack.length <= 1;
 
   // File rows
   listEl.innerHTML = '';
@@ -722,13 +964,14 @@ function renderFileBrowser() {
       if (e.target.checked) selectedFilePaths.add(nodePath);
       else selectedFilePaths.delete(nodePath);
       row.classList.toggle('selected', e.target.checked);
+      _syncFileSelectAllCheckbox('file-select-all', children, fileNavPaths, selectedFilePaths);
+      _syncFileSelActions('file-sel-actions', 'file-sel-count', selectedFilePaths);
     });
     row.querySelector('.file-row-check').addEventListener('click', e => e.stopPropagation());
     row.querySelector('.rename-btn').addEventListener('click', e => { e.stopPropagation(); renameFileEntry(nodePath, node.name); });
     row.querySelector('.delete-btn').addEventListener('click', e => {
       e.stopPropagation();
-      if (selectedFilePaths.size > 1 && selectedFilePaths.has(nodePath)) deleteSelectedFiles();
-      else deleteFileEntry(nodePath, node.name, node.type === 'dir');
+      deleteFileEntry(nodePath, node.name, node.type === 'dir');
     });
 
     if (node.type === 'dir') {
@@ -749,14 +992,41 @@ function renderFileBrowser() {
     }
     listEl.appendChild(row);
   }
+  _syncFileSelectAllCheckbox('file-select-all', children, fileNavPaths, selectedFilePaths);
+  _syncFileSelActions('file-sel-actions', 'file-sel-count', selectedFilePaths);
 }
 
-function fileBrowserUp() {
-  if (fileNavStack.length > 1) {
-    fileNavStack.pop();
-    fileNavPaths.pop();
-    renderFileBrowser();
+// Keeps a directory's "select all" checkbox in sync (checked/indeterminate/
+// unchecked) with how many of its currently-listed children are selected.
+function _syncFileSelectAllCheckbox(checkboxId, children, navPaths, selectedSet) {
+  const el = document.getElementById(checkboxId);
+  if (!el) return;
+  const total = children.length;
+  const selectedCount = children.filter(n => selectedSet.has([...navPaths, n.name].join('/'))).length;
+  el.checked = total > 0 && selectedCount === total;
+  el.indeterminate = selectedCount > 0 && selectedCount < total;
+}
+
+// Shows the toolbar's download / move / delete cluster only while something is
+// checked. Selection spans directories, so the count is the whole set, not just
+// what is visible in the current folder.
+function _syncFileSelActions(wrapId, countId, selectedSet) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return;
+  const n = selectedSet.size;
+  wrap.classList.toggle('hidden', n === 0);
+  const countEl = document.getElementById(countId);
+  if (countEl) countEl.textContent = `${n} selected`;
+}
+
+function toggleSelectAllFiles(checked) {
+  const children = fileNavStack[fileNavStack.length - 1] || [];
+  for (const node of children) {
+    const nodePath = [...fileNavPaths, node.name].join('/');
+    if (checked) selectedFilePaths.add(nodePath);
+    else selectedFilePaths.delete(nodePath);
   }
+  renderFileBrowser();
 }
 
 function fileBrowserGoTo(depth) {
@@ -840,10 +1110,13 @@ async function uploadFiles(fileList, dirPath) {
 
   fillEl.style.width = '100%';
   if (errors === 0) {
-    textEl.textContent = `Done — ${done} file${done > 1 ? 's' : ''} uploaded`;
+    textEl.textContent = `Done - ${done} file${done > 1 ? 's' : ''} uploaded`;
     toast(`Uploaded ${done} file${done > 1 ? 's' : ''}`, 'success');
   } else {
     textEl.textContent = `${done} uploaded, ${errors} failed`;
+  }
+  if (done > 0) {
+    window.mcpanel.logEvent(`Uploaded ${done} item(s) to server${dirPath ? ` (/${dirPath})` : ''} -id ${currentServerId}`);
   }
 
   dropZone.style.pointerEvents = '';
@@ -869,7 +1142,7 @@ async function uploadFilesFromPaths(paths, destDir) {
   try {
     await window.mcpanel.uploadFilesFromPaths(currentServerId, paths, destDir);
     fillEl.style.width = '100%';
-    textEl.textContent = `Done — ${paths.length} file${paths.length !== 1 ? 's' : ''} uploaded`;
+    textEl.textContent = `Done - ${paths.length} file${paths.length !== 1 ? 's' : ''} uploaded`;
     toast(`Uploaded ${paths.length} file${paths.length !== 1 ? 's' : ''}`, 'success');
     cachedFileTree = null;
     await openFilesTab();
@@ -1032,10 +1305,13 @@ async function saveFileEditor() {
 // ─── File Delete / Rename / Create ────────────────────────────────────────────
 
 async function deleteFileEntry(relPath, name, isDir) {
-  const msg = isDir
-    ? `Delete folder "${name}" and all its contents?`
-    : `Delete file "${name}"?`;
-  if (!confirm(msg)) return;
+  const ok = await confirmDialog({
+    title: isDir ? 'Delete Folder' : 'Delete File',
+    message: isDir
+      ? `Delete the folder "${name}" and all its contents?\n\nThis action cannot be undone.`
+      : `Delete the file "${name}"?\n\nThis action cannot be undone.`,
+  });
+  if (!ok) return;
   try {
     await window.mcpanel.deleteServerFile(currentServerId, relPath);
     toast(`Deleted "${name}"`, 'info');
@@ -1048,7 +1324,13 @@ async function deleteFileEntry(relPath, name, isDir) {
 
 async function deleteSelectedFiles() {
   const count = selectedFilePaths.size;
-  if (!confirm(`Delete ${count} selected item${count !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  if (!count) return;
+  const ok = await confirmDialog({
+    title: 'Delete Items',
+    message: `Delete ${count} selected item${count !== 1 ? 's' : ''}?\n\nFolders are deleted with all their contents. This action cannot be undone.`,
+    confirmLabel: `Delete ${count} Item${count !== 1 ? 's' : ''}`,
+  });
+  if (!ok) return;
   const paths = [...selectedFilePaths];
   let failed = 0;
   for (const p of paths) {
@@ -1060,6 +1342,152 @@ async function deleteSelectedFiles() {
   else toast(`Deleted ${paths.length - failed}, failed ${failed}`, 'error');
   cachedFileTree = null;
   await openFilesTab();
+}
+
+// ─── File Download / Move (selection actions) ─────────────────────────────────
+
+async function downloadSelectedFiles() {
+  await _downloadSelection('server');
+}
+
+async function downloadSelectedProfileFiles() {
+  await _downloadSelection('profile');
+}
+
+async function _downloadSelection(scope) {
+  const isProfile = scope === 'profile';
+  const paths = [...(isProfile ? selectedProfileFilePaths : selectedFilePaths)];
+  if (!paths.length) return;
+  const dest = await window.mcpanel.browseFolder();
+  if (!dest) return;
+  const id = isProfile ? currentProfileId : currentServerId;
+  try {
+    if (isProfile) await window.mcpanel.exportProfileFiles(id, paths, dest);
+    else await window.mcpanel.exportServerFiles(id, paths, dest);
+    toast(`Downloaded ${paths.length} item${paths.length !== 1 ? 's' : ''} to ${dest}`, 'success');
+  } catch (e) {
+    toast('Download failed: ' + e, 'error');
+  }
+}
+
+let _fileMoveCtx = null;              // { scope, paths, dest }  — dest is a rel path, '' = root
+let _fileMoveExpanded = new Set();    // rel paths of expanded folders in the picker
+
+function openFileMoveModal(scope) {
+  const isProfile = scope === 'profile';
+  const paths = [...(isProfile ? selectedProfileFilePaths : selectedFilePaths)];
+  if (!paths.length) return;
+  _fileMoveCtx = { scope, paths, dest: null };
+  // Root is expanded, plus the chain down to where the items currently live so
+  // the tree opens near them.
+  _fileMoveExpanded = new Set(['', ..._ancestorPaths(paths[0])]);
+  document.getElementById('file-move-title').textContent =
+    `Move ${paths.length} Item${paths.length !== 1 ? 's' : ''}`;
+  renderFileMoveTree();
+  openModal('modal-file-move');
+}
+
+function _ancestorPaths(relPath) {
+  const segs = relPath.split('/');
+  segs.pop();
+  return segs.map((_, i) => segs.slice(0, i + 1).join('/'));
+}
+
+function _fileMoveParentOf(relPath) {
+  const i = relPath.lastIndexOf('/');
+  return i === -1 ? '' : relPath.slice(0, i);
+}
+
+// A destination is unusable if it is one of the moved folders or lives inside
+// one (you cannot move a folder into itself), or if every selected item is
+// already sitting in it.
+function _fileMoveDestBlocked(dest) {
+  const { paths } = _fileMoveCtx;
+  if (paths.some(p => dest === p || dest.startsWith(p + '/'))) return true;
+  return paths.every(p => _fileMoveParentOf(p) === dest);
+}
+
+function renderFileMoveTree() {
+  const { scope, dest } = _fileMoveCtx;
+  const tree = scope === 'profile' ? (profileCachedFileTree || []) : (cachedFileTree || []);
+  const rootName = scope === 'profile' ? currentProfileId : currentServerId;
+  const el = document.getElementById('file-move-tree');
+  el.innerHTML = '';
+
+  const chevron = open => `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="transform:rotate(${open ? 90 : 0}deg);transition:transform .12s;color:var(--text-muted)"><polyline points="9 18 15 12 9 6"/></svg>`;
+  const folderIcon = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+
+  const addRow = (label, path, depth, hasChildren) => {
+    const blocked = path !== null && _fileMoveDestBlocked(path);
+    const row = document.createElement('div');
+    row.className = `file-move-row${dest === path ? ' selected' : ''}${blocked ? ' disabled' : ''}`;
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.innerHTML =
+      `<span class="file-move-caret" style="width:12px;display:flex;justify-content:center">${hasChildren ? chevron(_fileMoveExpanded.has(path)) : ''}</span>` +
+      folderIcon +
+      `<span class="file-move-name">${escapeHtml(label)}</span>`;
+    if (hasChildren) {
+      row.querySelector('.file-move-caret').addEventListener('click', e => {
+        e.stopPropagation();
+        if (_fileMoveExpanded.has(path)) _fileMoveExpanded.delete(path);
+        else _fileMoveExpanded.add(path);
+        renderFileMoveTree();
+      });
+    }
+    if (!blocked) {
+      row.addEventListener('click', () => { _fileMoveCtx.dest = path; renderFileMoveTree(); });
+    }
+    el.appendChild(row);
+  };
+
+  const walk = (nodes, parentPath, depth) => {
+    const dirs = nodes.filter(n => n.type === 'dir').sort((a, b) => a.name.localeCompare(b.name));
+    for (const n of dirs) {
+      const path = parentPath ? `${parentPath}/${n.name}` : n.name;
+      const kids = (n.children || []).filter(c => c.type === 'dir');
+      addRow(n.name, path, depth, kids.length > 0);
+      if (_fileMoveExpanded.has(path)) walk(n.children || [], path, depth + 1);
+    }
+  };
+
+  addRow(rootName, '', 0, tree.some(n => n.type === 'dir'));
+  if (_fileMoveExpanded.has('')) walk(tree, '', 1);
+}
+
+async function submitFileMove() {
+  if (!_fileMoveCtx) return;
+  const { scope, paths, dest } = _fileMoveCtx;
+  if (dest === null) { toast('Pick a destination folder', 'error'); return; }
+  closeModal('modal-file-move');
+
+  const isProfile = scope === 'profile';
+  const id = isProfile ? currentProfileId : currentServerId;
+  let moved = 0, skipped = 0, failed = 0, lastErr = '';
+  for (const p of paths) {
+    const name = p.split('/').pop();
+    if (_fileMoveParentOf(p) === dest || dest === p || dest.startsWith(p + '/')) { skipped++; continue; }
+    const newPath = dest ? `${dest}/${name}` : name;
+    try {
+      if (isProfile) await window.mcpanel.renameProfileFile(id, p, newPath);
+      else await window.mcpanel.renameServerFile(id, p, newPath);
+      moved++;
+    } catch (e) { failed++; lastErr = String(e); }
+  }
+
+  const where = dest || (isProfile ? currentProfileId : currentServerId);
+  if (failed) toast(`Moved ${moved}, failed ${failed}: ${lastErr}`, 'error');
+  else if (moved) toast(`Moved ${moved} item${moved !== 1 ? 's' : ''} to ${where}`, 'success');
+  else if (skipped) toast('Nothing to move — items are already there', 'info');
+
+  _fileMoveCtx = null;
+  if (isProfile) {
+    selectedProfileFilePaths.clear();
+    await reloadProfileFileTree();
+  } else {
+    selectedFilePaths.clear();
+    cachedFileTree = null;
+    await openFilesTab();
+  }
 }
 
 function renameFileEntry(relPath, name) {
@@ -1352,7 +1780,7 @@ function _renderPluginRow(r, ctx, software) {
     btnClass = 'plugin-install-btn'; btnText = 'View Page';
     btnOnclick = r.externalUrl
       ? `onclick="event.stopPropagation();window.mcpanel.openExternal('${escapeHtml(r.externalUrl)}')"`
-      : `onclick="event.stopPropagation();toast('This plugin is hosted externally — check its SpigotMC resource page','info')"`;
+      : `onclick="event.stopPropagation();toast('This plugin is hosted externally - check its SpigotMC resource page','info')"`;
   } else if (isInstalled) {
     btnClass = 'plugin-install-btn installed'; btnText = 'Installed';
     btnOnclick = `onclick="event.stopPropagation();_pluginBtnClick(this)" title="Click to remove"`;
@@ -1600,6 +2028,12 @@ async function removePlugin(btn, ctx) {
   const k = _pluginCtxKey(ctx);
   const relPath = _pluginInstalledMap[k]?.[slug];
   if (!relPath) return;
+  const ok = await confirmDialog({
+    title: 'Remove Plugin',
+    message: `Remove "${btn.dataset.name || slug}"?\n\nThis deletes ${relPath} from disk and cannot be undone.`,
+    confirmLabel: 'Remove Plugin',
+  });
+  if (!ok) return;
   btn.textContent = 'Removing…';
   btn.disabled = true;
   try {
@@ -1667,7 +2101,7 @@ async function updateProxyPrioritySlider(velocityId) {
     valEl.textContent = tryList.length;
     labelsEl.innerHTML = tryList.length > 0
       ? tryList.map((n, i) => `<span>${i}: ${escapeHtml(n)}</span>`).join('') + `<span>${tryList.length}: (end)</span>`
-      : '<span style="opacity:0.55">Try list is empty — this will be the first server</span>';
+      : '<span style="opacity:0.55">Try list is empty - this will be the first server</span>';
   } catch { /* ignore */ }
 }
 
@@ -1727,7 +2161,6 @@ async function sidebarQuickToggle(id, e) {
 // ─── Detail Controls ──────────────────────────────────────────────────────────
 function updateDetailControls(running) {
   const actionsEl = document.getElementById('detail-actions');
-  const controlsEl = document.getElementById('control-buttons');
   const statusDot = document.getElementById('console-status-dot');
   const bigStatus = document.getElementById('big-status-badge');
 
@@ -1736,143 +2169,388 @@ function updateDetailControls(running) {
   bigStatus.textContent = running ? 'ONLINE' : 'OFFLINE';
 
   actionsEl.innerHTML = '';
-  controlsEl.innerHTML = '';
 
-  if (!running) {
-    const startBtn = document.createElement('button');
-    startBtn.className = 'btn-primary';
-    startBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start`;
-    startBtn.onclick = () => startServerFlow(currentServerId);
-    actionsEl.appendChild(startBtn);
-
-    const startBig = document.createElement('button');
-    startBig.className = 'btn-control start';
-    startBig.style.gridColumn = '1 / -1';
-    startBig.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start Server`;
-    startBig.onclick = () => startServerFlow(currentServerId);
-    controlsEl.appendChild(startBig);
-  } else {
-    // Stop btn in header
-    const stopBtn = document.createElement('button');
-    stopBtn.className = 'btn-ghost';
-    stopBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Stop`;
-    stopBtn.onclick = async () => {
+  // Start / Stop / Restart / Kill all live in the detail header.
+  const controls = !running ? [
+    { label: 'Start', cls: 'start', icon: `<polygon points="5 3 19 12 5 21 5 3"/>`, fill: true, action: () => startServerFlow(currentServerId) },
+  ] : [
+    { label: 'Stop', cls: 'stop', icon: `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`, fill: true, action: async () => {
       await window.mcpanel.stopServer(currentServerId);
       toast('Stop command sent', 'info');
-    };
-    actionsEl.appendChild(stopBtn);
+    }},
+    { label: 'Restart', cls: 'restart', icon: `<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>`, action: async () => {
+      toast('Restarting server...', 'info');
+      const r = await window.mcpanel.restartServer(currentServerId);
+      if (r && r.error) toast(r.error, 'error');
+      else if (r && r.success) {
+        startingServers.add(currentServerId);
+        updateDetailControls(true);
+        updateDetailStarting();
+        updateServerCardStatus(currentServerId, 'starting', 0);
+        updateSidebarDot(currentServerId, true);
+        pollAllStatuses();
+      }
+    }},
+    { label: 'Kill', cls: 'kill', icon: `<path d="M18 6L6 18M6 6l12 12"/>`, action: async () => { await window.mcpanel.killServer(currentServerId); updateDetailControls(false); toast('Server killed', 'error'); } },
+  ];
 
-    // Control grid
-    const controls = [
-      { label: 'Stop', cls: 'stop', icon: `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`, action: () => window.mcpanel.stopServer(currentServerId) },
-      { label: 'Restart', cls: 'restart', icon: `<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>`, action: async () => {
-        toast('Restarting server...', 'info');
-        const r = await window.mcpanel.restartServer(currentServerId);
-        if (r && r.error) toast(r.error, 'error');
-        else if (r && r.success) {
-          startingServers.add(currentServerId);
-          updateDetailControls(true);
-          updateDetailStarting();
-          updateServerCardStatus(currentServerId, 'starting', 0);
-          updateSidebarDot(currentServerId, true);
-          pollAllStatuses();
-        }
-      }},
-      { label: 'Kill', cls: 'kill', icon: `<path d="M18 6L6 18M6 6l12 12"/>`, action: async () => { await window.mcpanel.killServer(currentServerId); updateDetailControls(false); toast('Server killed', 'error'); } },
-    ];
-    controls.forEach(({ label, cls, icon, action }) => {
-      const btn = document.createElement('button');
-      btn.className = `btn-control ${cls}`;
-      btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon}</svg>${label}`;
-      btn.onclick = () => action();
-      controlsEl.appendChild(btn);
-    });
-  }
+  controls.forEach(({ label, cls, icon, fill, action }) => {
+    const btn = document.createElement('button');
+    btn.className = `btn-control ${cls}`;
+    const svg = fill
+      ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">${icon}</svg>`
+      : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon}</svg>`;
+    btn.innerHTML = `${svg}${label}`;
+    btn.onclick = () => action();
+    actionsEl.appendChild(btn);
+  });
+}
+
+// Mini donut gauges in the detail status bar. Circumference = 2π × 26.
+const DETAIL_CIRC = 163.363;
+function setMiniCircle(arcId, pct, colorClass) {
+  const arc = document.getElementById(arcId);
+  if (!arc) return;
+  const p = Math.min(Math.max(pct, 0), 100);
+  arc.style.strokeDashoffset = DETAIL_CIRC * (1 - p / 100);
+  arc.className = 'mini-circle-arc' + (colorClass ? ' ' + colorClass : '');
+}
+
+// Show one decimal when a value rounds to 0% (e.g. a nearly-idle CPU) so it
+// doesn't flatten to a bare "0%".
+function fmtPct(p) {
+  return Math.round(p) === 0 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`;
 }
 
 function setPlayersBar(current, max, online) {
-  const barEl = document.getElementById('detail-players-bar');
   const textEl = document.getElementById('detail-players');
   if (!textEl) return;
   if (!online) {
-    if (barEl) barEl.style.width = '0%';
+    setMiniCircle('detail-players-arc', 0);
     textEl.textContent = '0/0';
     return;
   }
-  const pct = max > 0 ? Math.min(100, (current / max) * 100) : 0;
-  if (barEl) barEl.style.width = pct + '%';
+  const pct = max > 0 ? (current / max) * 100 : 0;
+  setMiniCircle('detail-players-arc', pct, 'arc-green');
   textEl.textContent = `${current}/${max}`;
+}
+
+function setCpuGauge(pct, online) {
+  const valEl = document.getElementById('detail-cpu');
+  const subEl = document.getElementById('detail-cpu-sub');
+  if (!valEl) return;
+  // Offline (or no reading) still reads 0.0% rather than a bare dash.
+  const p = (online && pct != null) ? Math.min(100, Math.max(0, pct)) : 0;
+  setMiniCircle('detail-cpu-arc', p, p > 85 ? 'arc-danger' : p > 65 ? 'arc-warn' : '');
+  valEl.textContent = fmtPct(p);
+  if (subEl) {
+    const model = stripCpuName(systemCpu.name) || systemCpu.name;
+    subEl.textContent = model || '-';
+    subEl.title = systemCpu.name || '';
+  }
 }
 
 function formatCap(capStr) {
   const bytes = parseStorageLimit(capStr);
-  return bytes !== null ? formatBytes(bytes) : (capStr || '—');
+  return bytes !== null ? formatBytes(bytes) : (capStr || '-');
 }
 
 function setRamBar(usedBytes, capStr) {
-  const barEl = document.getElementById('detail-ram-bar');
-  const textEl = document.getElementById('detail-ram');
-  if (!textEl) return;
+  const valEl = document.getElementById('detail-ram');
+  const subEl = document.getElementById('detail-ram-sub');
+  if (!valEl) return;
   const capBytes = parseStorageLimit(capStr);
-  if (capBytes !== null) {
-    const used = usedBytes || 0;
+  const used = usedBytes || 0;
+  if (capBytes !== null && capBytes > 0) {
     const pct = Math.min(100, (used / capBytes) * 100);
-    if (barEl) barEl.style.width = pct + '%';
-    textEl.textContent = `${formatBytes(used)} / ${formatCap(capStr)}`;
+    setMiniCircle('detail-ram-arc', pct, pct > 90 ? 'arc-danger' : pct > 75 ? 'arc-warn' : '');
+    valEl.textContent = fmtPct(pct);
+    if (subEl) subEl.textContent = `${formatBytes(used)} / ${formatCap(capStr)}`;
   } else {
-    if (barEl) barEl.style.width = '0%';
-    textEl.textContent = formatCap(capStr);
+    setMiniCircle('detail-ram-arc', 0);
+    valEl.textContent = used > 0 ? formatBytes(used) : '-';
+    if (subEl) subEl.textContent = formatCap(capStr);
   }
 }
 
 function setStorageBar(usedBytes, limitStr) {
-  const barEl = document.getElementById('detail-storage-bar');
-  const textEl = document.getElementById('detail-storage');
-  if (!textEl) return;
+  const valEl = document.getElementById('detail-storage');
+  const subEl = document.getElementById('detail-storage-sub');
+  if (!valEl) return;
   const used = usedBytes || 0;
   const usedFmt = formatBytes(used);
-  if (limitStr) {
-    const limitBytes = parseStorageLimit(limitStr);
-    if (limitBytes !== null) {
-      const pct = Math.min(100, (used / limitBytes) * 100);
-      const over = used > limitBytes;
-      if (barEl) {
-        barEl.style.width = pct + '%';
-        barEl.className = `stat-bar-fill ${over ? 'bar-red' : 'bar-purple'}`;
-      }
-      textEl.textContent = `${usedFmt} / ${formatCap(limitStr)}`;
-      textEl.style.color = over ? 'var(--red)' : '';
-      return;
-    }
+  const limitBytes = limitStr ? parseStorageLimit(limitStr) : null;
+  const capBytes = limitBytes !== null ? limitBytes : (systemInfo.totalStorage || null);
+  const capFmt = limitBytes !== null ? formatCap(limitStr)
+    : (capBytes ? formatBytes(capBytes) : null);
+  if (capBytes && capBytes > 0) {
+    const ratio = (used / capBytes) * 100;
+    const over = used > capBytes;
+    setMiniCircle('detail-storage-arc', ratio, over ? 'arc-danger' : ratio > 90 ? 'arc-warn' : '');
+    valEl.textContent = fmtPct(ratio);
+    valEl.style.color = over ? 'var(--red)' : '';
+    if (subEl) subEl.textContent = `${usedFmt} / ${capFmt}`;
+    return;
   }
-  if (systemInfo.totalStorage) {
-    const pct = Math.min(100, (used / systemInfo.totalStorage) * 100);
-    if (barEl) {
-      barEl.style.width = pct + '%';
-      barEl.className = 'stat-bar-fill bar-purple';
-    }
-    textEl.textContent = `${usedFmt} / ${formatBytes(systemInfo.totalStorage)}`;
-  } else {
-    if (barEl) barEl.style.width = '0%';
-    textEl.textContent = usedFmt;
-  }
-  textEl.style.color = '';
+  setMiniCircle('detail-storage-arc', 0);
+  valEl.textContent = usedFmt;
+  valEl.style.color = '';
+  if (subEl) subEl.textContent = '';
 }
 
 function updateDetailOnline(online, players = 0, maxPlayers = 0, playerList = []) {
   const bigStatus = document.getElementById('big-status-badge');
   bigStatus.className = `big-status ${online ? 'online' : ''}`;
   bigStatus.textContent = online ? 'ONLINE' : 'OFFLINE';
+  currentOnlinePlayers = online ? (playerList || []) : [];
   setPlayersBar(players, maxPlayers, online);
   const listEl = document.getElementById('detail-player-list');
   if (listEl) {
     if (online && playerList.length > 0) {
-      listEl.textContent = playerList.join(', ');
+      const shown = playerList.slice(0, 5);
+      const extra = playerList.length - shown.length;
+      listEl.textContent = shown.join(', ') + (extra > 0 ? ` +${extra} more` : '');
       listEl.style.display = '';
     } else {
       listEl.style.display = 'none';
     }
   }
+}
+
+// ─── Players tab ──────────────────────────────────────────────────────────────
+let currentOnlinePlayers = [];
+let playerData = { players: [], banned: [] };
+let _selectedPlayerName = null;
+
+// Player-head avatar. minotar resolves by UUID (dashless) or, failing that, by
+// name; unknown players fall back to the default Steve head.
+function playerHeadUrl(p, size = 38) {
+  const id = p && p.uuid ? p.uuid.replace(/-/g, '') : encodeURIComponent((p && p.name) || 'Steve');
+  return `https://minotar.net/helm/${id}/${size}.png`;
+}
+
+async function _readServerJson(id, rel) {
+  try {
+    return JSON.parse(await window.mcpanel.readServerFile(id, rel));
+  } catch { return null; }
+}
+
+function _isServerRunning() {
+  return !!(currentServerId && serverStartTimes[currentServerId]);
+}
+
+// Aggregate the roster from the server's own JSON files (each optional) plus the
+// currently-online sample. Banned players are split into their own list.
+async function loadPlayerData(id) {
+  const [whitelist, ops, banned, usercache] = await Promise.all([
+    _readServerJson(id, 'whitelist.json'),
+    _readServerJson(id, 'ops.json'),
+    _readServerJson(id, 'banned-players.json'),
+    _readServerJson(id, 'usercache.json'),
+  ]);
+
+  const map = new Map(); // lowercased name → player
+  const put = (name, uuid) => {
+    if (!name) return null;
+    const key = String(name).toLowerCase();
+    let p = map.get(key);
+    if (!p) { p = { name, uuid: uuid || null, whitelisted: false, op: false, online: false }; map.set(key, p); }
+    if (!p.uuid && uuid) p.uuid = uuid;
+    return p;
+  };
+
+  (Array.isArray(usercache) ? usercache : []).forEach(e => put(e.name, e.uuid));
+  (Array.isArray(whitelist) ? whitelist : []).forEach(e => { const p = put(e.name, e.uuid); if (p) p.whitelisted = true; });
+  (Array.isArray(ops) ? ops : []).forEach(e => { const p = put(e.name, e.uuid); if (p) { p.op = true; p.opLevel = e.level; } });
+  (currentOnlinePlayers || []).forEach(n => { const p = put(n); if (p) p.online = true; });
+
+  const bannedList = (Array.isArray(banned) ? banned : []).map(e => ({
+    name: e.name, uuid: e.uuid || null, reason: e.reason || '', source: e.source || '', created: e.created || '',
+  }));
+  const bannedKeys = new Set(bannedList.map(b => String(b.name || '').toLowerCase()));
+
+  const players = [...map.values()].filter(p => !bannedKeys.has(p.name.toLowerCase()));
+  players.sort((a, b) => (b.online - a.online) || (b.op - a.op) || a.name.localeCompare(b.name));
+
+  return { players, banned: bannedList };
+}
+
+async function openPlayersTab() {
+  showPlayerRoster();
+  await reloadPlayers();
+}
+
+async function reloadPlayers() {
+  const id = currentServerId;
+  if (!id) return;
+  playerData = await loadPlayerData(id);
+  renderPlayerRoster();
+  // Keep an open control panel in sync with the freshly-loaded data.
+  if (_selectedPlayerName && !document.getElementById('player-view-detail').classList.contains('hidden')) {
+    renderPlayerDetail(_selectedPlayerName);
+  }
+}
+
+// ── Sub-tab switching ──
+function showPlayerRoster() {
+  document.getElementById('psub-list').classList.add('active');
+  document.getElementById('psub-detail').classList.remove('active');
+  document.getElementById('player-view-roster').classList.remove('hidden');
+  document.getElementById('player-view-detail').classList.add('hidden');
+}
+function showPlayerDetailTab() {
+  const detailTab = document.getElementById('psub-detail');
+  detailTab.classList.remove('hidden');
+  detailTab.classList.add('active');
+  document.getElementById('psub-list').classList.remove('active');
+  document.getElementById('player-view-roster').classList.add('hidden');
+  document.getElementById('player-view-detail').classList.remove('hidden');
+}
+
+// ── Roster rendering ──
+function renderPlayerRoster() {
+  const grid = document.getElementById('player-grid');
+  if (!grid) return;
+  const running = _isServerRunning();
+  const players = playerData.players || [];
+  document.getElementById('player-count').textContent = players.length;
+  document.getElementById('player-empty').classList.toggle('hidden', players.length > 0);
+  grid.innerHTML = players.map(playerItemHtml).join('');
+
+  const banned = playerData.banned || [];
+  document.getElementById('player-banned-count').textContent = banned.length;
+  document.getElementById('player-banned-head').style.display = banned.length ? '' : 'none';
+  document.getElementById('player-banned-grid').innerHTML = banned.map(b => bannedItemHtml(b, running)).join('');
+}
+
+function playerItemHtml(p) {
+  const tags = [];
+  if (p.online) tags.push('<span class="ptag online">Online</span>');
+  if (p.op) tags.push('<span class="ptag op">OP</span>');
+  if (p.whitelisted) tags.push('<span class="ptag wl">Whitelist</span>');
+  if (!tags.length) tags.push('<span class="ptag" style="color:var(--text-muted);background:var(--bg-base)">Known</span>');
+  const enc = encodeURIComponent(p.name);
+  return `<div class="player-item" onclick="openPlayerControl('${enc}')">
+    <img class="player-head" src="${playerHeadUrl(p, 38)}" alt="" onerror="this.style.visibility='hidden'">
+    <div class="player-item-info">
+      <span class="player-item-name">${escapeHtml(p.name)}</span>
+      <div class="player-tags">${tags.join('')}</div>
+    </div>
+  </div>`;
+}
+
+function bannedItemHtml(b, running) {
+  const enc = encodeURIComponent(b.name);
+  const reasonAttr = b.reason ? ` title="${escapeHtml(b.reason)}"` : '';
+  return `<div class="player-item" onclick="openPlayerControl('${enc}')">
+    <img class="player-head" src="${playerHeadUrl(b, 38)}" alt="" onerror="this.style.visibility='hidden'">
+    <div class="player-item-info">
+      <span class="player-item-name">${escapeHtml(b.name)}</span>
+      <div class="player-tags"><span class="ptag banned"${reasonAttr}>Banned</span></div>
+    </div>
+    <button class="btn-ghost-sm player-unban" ${running ? '' : 'disabled'}
+      onclick="event.stopPropagation(); unbanPlayer('${enc}')">Unban</button>
+  </div>`;
+}
+
+// ── Control panel ──
+function findPlayerByName(name) {
+  const key = name.toLowerCase();
+  const p = (playerData.players || []).find(x => x.name.toLowerCase() === key);
+  if (p) return { ...p, banned: false };
+  const b = (playerData.banned || []).find(x => String(x.name || '').toLowerCase() === key);
+  if (b) return { ...b, banned: true, whitelisted: false, op: false, online: false };
+  return { name, uuid: null, banned: false, whitelisted: false, op: false, online: false };
+}
+
+function openPlayerControl(enc) {
+  const name = decodeURIComponent(enc);
+  _selectedPlayerName = name;
+  renderPlayerDetail(name);
+  showPlayerDetailTab();
+}
+
+function renderPlayerDetail(name) {
+  const p = findPlayerByName(name);
+  const view = document.getElementById('player-view-detail');
+  if (!view) return;
+  const running = _isServerRunning();
+  const dis = running ? '' : 'disabled';
+  const enc = encodeURIComponent(p.name);
+
+  const tags = [];
+  if (p.online) tags.push('<span class="ptag online">Online</span>');
+  if (p.op) tags.push('<span class="ptag op">OP</span>');
+  if (p.whitelisted) tags.push('<span class="ptag wl">Whitelist</span>');
+  if (p.banned) tags.push('<span class="ptag banned">Banned</span>');
+
+  let actions;
+  if (p.banned) {
+    actions = `<button class="btn-control start" ${dis} onclick="unbanPlayer('${enc}')">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg> Unban</button>`;
+  } else {
+    actions = `
+      <button class="btn-control wl" ${dis} onclick="togglePlayerWhitelist('${enc}', ${p.whitelisted})">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        ${p.whitelisted ? 'Remove from whitelist' : 'Add to whitelist'}</button>
+      <button class="btn-control op" ${dis} onclick="togglePlayerOp('${enc}', ${p.op})">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.3 17 14 18.2 21 12 17.6 5.8 21 7 14 2 9.3 9 8.5 12 2"/></svg>
+        ${p.op ? 'Deop' : 'Op'}</button>
+      <button class="btn-control warn" ${(p.online && running) ? '' : 'disabled'} onclick="kickPlayer('${enc}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg>
+        Kick</button>
+      <button class="btn-control stop" ${dis} onclick="banPlayer('${enc}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M4.9 4.9l14.2 14.2"/></svg>
+        Ban</button>`;
+  }
+
+  const note = running ? '' : `<div class="player-offline-note">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+    Start the server to manage this player.</div>`;
+
+  view.innerHTML = `
+    <div class="player-detail-head">
+      <img class="player-head lg" src="${playerHeadUrl(p, 72)}" alt="" onerror="this.style.visibility='hidden'">
+      <div class="player-detail-meta">
+        <div class="player-detail-name">${escapeHtml(p.name)}</div>
+        ${p.uuid ? `<div class="player-detail-uuid">${escapeHtml(p.uuid)}</div>` : ''}
+        <div class="player-detail-tags player-tags">${tags.join('')}</div>
+      </div>
+    </div>
+    ${note}
+    <div class="player-detail-actions">${actions}</div>`;
+
+  document.getElementById('psub-detail-name').textContent = p.name;
+}
+
+// ── Actions (routed through the console; require a running server) ──
+async function _playerCmd(cmd, okMsg) {
+  if (!currentServerId) return false;
+  const r = await window.mcpanel.sendCommand(currentServerId, cmd);
+  if (r && r.error) { toast(r.error, 'error'); return false; }
+  toast(okMsg, 'success');
+  setTimeout(reloadPlayers, 700); // let the server write its JSON files first
+  return true;
+}
+function togglePlayerWhitelist(enc, isWl) {
+  const name = decodeURIComponent(enc);
+  _playerCmd(`whitelist ${isWl ? 'remove' : 'add'} ${name}`, isWl ? `Removed ${name} from whitelist` : `Added ${name} to whitelist`);
+}
+function togglePlayerOp(enc, isOp) {
+  const name = decodeURIComponent(enc);
+  _playerCmd(`${isOp ? 'deop' : 'op'} ${name}`, isOp ? `Deopped ${name}` : `Opped ${name}`);
+}
+function kickPlayer(enc) {
+  const name = decodeURIComponent(enc);
+  _playerCmd(`kick ${name}`, `Kicked ${name}`);
+}
+function banPlayer(enc) {
+  const name = decodeURIComponent(enc);
+  _playerCmd(`ban ${name}`, `Banned ${name}`);
+}
+function unbanPlayer(enc) {
+  const name = decodeURIComponent(enc);
+  _playerCmd(`pardon ${name}`, `Unbanned ${name}`);
 }
 
 // ─── ANSI → HTML ─────────────────────────────────────────────────────────────
@@ -1945,15 +2623,19 @@ function ansiToHtml(text) {
 // ─── Console Poll ─────────────────────────────────────────────────────────────
 async function _pollStep(id) {
   if (consolePollInterval === null || id !== currentServerId) return;
+  let delay = 50;
   try {
     const result = await window.mcpanel.getLogSince(id, consoleLogOffset);
     if (result && id === currentServerId) {
       consoleLogOffset = result.offset;
       (result.lines || []).forEach(entry => appendConsoleLine(entry.text || '', entry.type || 'out'));
     }
-  } catch {}
+  } catch {
+    // Don't hammer a broken read every 50ms — back off for a minute.
+    delay = 60000;
+  }
   if (consolePollInterval !== null && id === currentServerId) {
-    consolePollInterval = setTimeout(() => _pollStep(id), 50);
+    consolePollInterval = setTimeout(() => _pollStep(id), delay);
   }
 }
 
@@ -2283,8 +2965,15 @@ function openRenameModal() {
 }
 
 // ─── Delete Server ────────────────────────────────────────────────────────────
-function confirmDeleteServer() {
-  openModal('modal-confirm-delete');
+async function confirmDeleteServer() {
+  if (!currentServerId) return;
+  const srv = config.servers.find(s => s.id === currentServerId);
+  const ok = await confirmDialog({
+    title: 'Delete Server',
+    message: `Permanently delete "${srv?.name || currentServerId}" and all its files?\n\nThis action cannot be undone.`,
+    confirmLabel: 'Delete Server',
+  });
+  if (ok) await executeDeleteServer();
 }
 
 async function executeDeleteServer() {
@@ -2293,7 +2982,6 @@ async function executeDeleteServer() {
   if (r.error) { toast(r.error, 'error'); return; }
   config.servers = config.servers.filter(s => s.id !== currentServerId);
   currentServerId = null;
-  closeModal('modal-confirm-delete');
   renderServersGrid();
   renderSidebarServers();
   showPage('servers');
@@ -2412,13 +3100,13 @@ async function updateSpigotJdkPicker(version) {
     opt.disabled = !j.compatible;
     const recTag = j.path === recommended ? ' (recommended)' : '';
     opt.textContent = j.compatible
-      ? `Java ${j.version} — ${j.path}${recTag}`
-      : `Java ${j.version} — ${j.path}  (${j.reason})`;
+      ? `Java ${j.version} - ${j.path}${recTag}`
+      : `Java ${j.version} - ${j.path}  (${j.reason})`;
     sel.appendChild(opt);
   });
   const custom = document.createElement('option');
   custom.value = '__custom__';
-  custom.textContent = jdks.length ? 'Custom path…' : 'No JDKs detected — enter a path manually';
+  custom.textContent = jdks.length ? 'Custom path…' : 'No JDKs detected - enter a path manually';
   sel.appendChild(custom);
 
   if (recommended) {
@@ -2430,7 +3118,7 @@ async function updateSpigotJdkPicker(version) {
 
   if (warnEl) {
     if (!recommended) {
-      warnEl.textContent = `⚠ None of your installed JDKs support ${reqText} for Spigot ${version} — install one, or enter a path manually below.`;
+      warnEl.textContent = `⚠ None of your installed JDKs support ${reqText} for Spigot ${version} - install one, or enter a path manually below.`;
       warnEl.classList.remove('hidden');
     } else {
       warnEl.classList.add('hidden');
@@ -2453,7 +3141,7 @@ function filterProfilesForSoftware(software) {
   const version = document.getElementById('cs-version').value;
   const hint = document.getElementById('cs-profile-hint');
   
-  profileSel.innerHTML = '<option value="">— No profile (plain server) —</option>';
+  profileSel.innerHTML = '<option value="">- No profile (plain server) -</option>';
   
   profiles.forEach(p => {
     const softwareOk = p.software.length === 0 || p.software.includes(software);
@@ -2461,7 +3149,7 @@ function filterProfilesForSoftware(software) {
     if (softwareOk && versionOk) {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.name + (p.description ? ` — ${p.description}` : '');
+      opt.textContent = p.name + (p.description ? ` - ${p.description}` : '');
       profileSel.appendChild(opt);
     }
   });
@@ -2546,6 +3234,7 @@ function _profileSubtitle(profile) {
 function openProfileDetail(profileId) {
   const profile = profiles.find(p => p.id === profileId);
   if (!profile) return;
+  window.mcpanel.logEvent(`Opened profile panel: ${profile.name} -id ${profileId}`);
   currentProfileId = profileId;
   currentProfile = profile;
   profileNavStack = [];
@@ -2566,7 +3255,7 @@ function openProfileDetail(profileId) {
   document.getElementById('pd-id').textContent = profile.id;
   document.getElementById('pd-created').textContent = profile.created
     ? new Date(profile.created).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-    : '—';
+    : '-';
 
   _renderProfileSidebarTags();
   switchProfileTab('overview');
@@ -2655,7 +3344,12 @@ async function saveProfileSettings() {
 }
 
 async function deleteCurrentProfile() {
-  if (!confirm(`Delete profile "${currentProfile.name}" and all its files? This cannot be undone.`)) return;
+  const ok = await confirmDialog({
+    title: 'Delete Profile',
+    message: `Permanently delete the profile "${currentProfile.name}" and all its files?\n\nThis action cannot be undone.`,
+    confirmLabel: 'Delete Profile',
+  });
+  if (!ok) return;
   const r = await window.mcpanel.deleteProfile(currentProfileId);
   if (r && r.error) { toast(r.error, 'error'); return; }
   profiles = profiles.filter(p => p.id !== currentProfileId);
@@ -2695,7 +3389,6 @@ function renderProfileFileBrowser() {
   const children = profileNavStack[profileNavStack.length - 1];
   const listEl = document.getElementById('profile-file-list');
   const bcEl = document.getElementById('profile-file-breadcrumb');
-  const upBtn = document.getElementById('profile-file-up-btn');
 
   const parts = [currentProfileId, ...profileNavPaths];
   bcEl.innerHTML = parts.map((seg, i) => {
@@ -2707,7 +3400,6 @@ function renderProfileFileBrowser() {
     const depth = parseInt(el.dataset.depth);
     if (depth < parts.length - 1) el.onclick = () => profileFileBrowserGoTo(depth);
   });
-  upBtn.disabled = profileNavStack.length <= 1;
 
   listEl.innerHTML = '';
   const sorted = [...children].sort((a, b) => {
@@ -2738,15 +3430,14 @@ function renderProfileFileBrowser() {
       if (e.target.checked) selectedProfileFilePaths.add(nodePath);
       else selectedProfileFilePaths.delete(nodePath);
       row.classList.toggle('selected', e.target.checked);
+      _syncFileSelectAllCheckbox('profile-file-select-all', children, profileNavPaths, selectedProfileFilePaths);
+      _syncFileSelActions('profile-file-sel-actions', 'profile-file-sel-count', selectedProfileFilePaths);
     });
     row.querySelector('.file-row-check').addEventListener('click', e => e.stopPropagation());
     row.querySelector('.rename-btn').addEventListener('click', e => { e.stopPropagation(); renameProfileFileEntry(nodePath, node.name); });
     row.querySelector('.delete-btn').addEventListener('click', e => {
       e.stopPropagation();
-      if (selectedProfileFilePaths.size > 1 && selectedProfileFilePaths.has(nodePath))
-        deleteSelectedProfileFiles();
-      else
-        deleteProfileFileEntry(nodePath, node.name, node.type === 'dir');
+      deleteProfileFileEntry(nodePath, node.name, node.type === 'dir');
     });
 
     if (node.type === 'dir') {
@@ -2767,13 +3458,18 @@ function renderProfileFileBrowser() {
     }
     listEl.appendChild(row);
   }
+  _syncFileSelectAllCheckbox('profile-file-select-all', children, profileNavPaths, selectedProfileFilePaths);
+  _syncFileSelActions('profile-file-sel-actions', 'profile-file-sel-count', selectedProfileFilePaths);
 }
 
-function profileFileBrowserUp() {
-  if (profileNavStack.length > 1) {
-    profileNavStack.pop(); profileNavPaths.pop();
-    renderProfileFileBrowser();
+function toggleSelectAllProfileFiles(checked) {
+  const children = profileNavStack[profileNavStack.length - 1] || [];
+  for (const node of children) {
+    const nodePath = [...profileNavPaths, node.name].join('/');
+    if (checked) selectedProfileFilePaths.add(nodePath);
+    else selectedProfileFilePaths.delete(nodePath);
   }
+  renderProfileFileBrowser();
 }
 
 function profileFileBrowserGoTo(depth) {
@@ -2837,10 +3533,13 @@ async function uploadProfileFiles(fileList, dirPath) {
   }
   fillEl.style.width = '100%';
   if (errors === 0) {
-    textEl.textContent = `Done — ${done} file${done > 1 ? 's' : ''} uploaded`;
+    textEl.textContent = `Done - ${done} file${done > 1 ? 's' : ''} uploaded`;
     toast(`Uploaded ${done} file${done > 1 ? 's' : ''}`, 'success');
   } else {
     textEl.textContent = `${done} uploaded, ${errors} failed`;
+  }
+  if (done > 0) {
+    window.mcpanel.logEvent(`Uploaded ${done} item(s) to profile${dirPath ? ` (/${dirPath})` : ''} -id ${currentProfileId}`);
   }
   dropZone.style.pointerEvents = '';
   setTimeout(() => { progressEl.classList.add('hidden'); fillEl.style.width = '0%'; }, 3000);
@@ -2857,7 +3556,7 @@ async function uploadProfileFilesFromPaths(paths, destDir) {
   try {
     await window.mcpanel.uploadFilesToProfile(currentProfileId, paths, destDir);
     fillEl.style.width = '100%';
-    textEl.textContent = `Done — ${paths.length} file${paths.length > 1 ? 's' : ''} copied`;
+    textEl.textContent = `Done - ${paths.length} file${paths.length > 1 ? 's' : ''} copied`;
     toast(`Copied ${paths.length} file${paths.length > 1 ? 's' : ''}`, 'success');
   } catch (e) {
     toast('Upload failed: ' + e, 'error');
@@ -2869,8 +3568,13 @@ async function uploadProfileFilesFromPaths(paths, destDir) {
 }
 
 async function deleteProfileFileEntry(relPath, name, isDir) {
-  const msg = isDir ? `Delete folder "${name}" and all its contents?` : `Delete file "${name}"?`;
-  if (!confirm(msg)) return;
+  const ok = await confirmDialog({
+    title: isDir ? 'Delete Folder' : 'Delete File',
+    message: isDir
+      ? `Delete the folder "${name}" and all its contents?\n\nThis action cannot be undone.`
+      : `Delete the file "${name}"?\n\nThis action cannot be undone.`,
+  });
+  if (!ok) return;
   try {
     await window.mcpanel.deleteProfileFile(currentProfileId, relPath);
     toast(`Deleted "${name}"`, 'info');
@@ -2881,7 +3585,13 @@ async function deleteProfileFileEntry(relPath, name, isDir) {
 
 async function deleteSelectedProfileFiles() {
   const count = selectedProfileFilePaths.size;
-  if (!confirm(`Delete ${count} selected item${count !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  if (!count) return;
+  const ok = await confirmDialog({
+    title: 'Delete Items',
+    message: `Delete ${count} selected item${count !== 1 ? 's' : ''}?\n\nFolders are deleted with all their contents. This action cannot be undone.`,
+    confirmLabel: `Delete ${count} Item${count !== 1 ? 's' : ''}`,
+  });
+  if (!ok) return;
   const paths = [...selectedProfileFilePaths];
   let failed = 0;
   for (const p of paths) {
@@ -2949,13 +3659,13 @@ function renderProfilesGrid() {
       return;
     }
     if (empty) empty.classList.add('hidden');
-    const filtered = query
+    const filtered = sortProfiles(query
       ? p.filter(pr =>
           pr.name.toLowerCase().includes(query) ||
           (pr.description || '').toLowerCase().includes(query) ||
           (pr.software || []).some(sw => sw.toLowerCase().includes(query))
         )
-      : p;
+      : p);
     if (filtered.length === 0) {
       const msg = document.createElement('div');
       msg.className = 'grid-no-results';
@@ -3015,7 +3725,7 @@ function createProfileCard(profile) {
       </div>
       <div class="stat-chip">
         <div class="stat-chip-label">Created</div>
-        <div class="stat-chip-value">${profile.created ? new Date(profile.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }) : '—'}</div>
+        <div class="stat-chip-value">${profile.created ? new Date(profile.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }) : '-'}</div>
       </div>
     </div>
     <div class="server-card-footer">
@@ -3029,6 +3739,13 @@ function createProfileCard(profile) {
 }
 
 async function deleteProfile(id) {
+  const p = profiles.find(x => x.id === id);
+  const ok = await confirmDialog({
+    title: 'Delete Profile',
+    message: `Permanently delete the profile "${p?.name || id}" and all its files?\n\nThis action cannot be undone.`,
+    confirmLabel: 'Delete Profile',
+  });
+  if (!ok) return;
   const r = await window.mcpanel.deleteProfile(id);
   if (r.error) { toast(r.error, 'error'); return; }
   profiles = profiles.filter(p => p.id !== id);
@@ -3191,7 +3908,7 @@ function applyUpdateResult(result) {
   const pillEl = document.getElementById('update-pill');
   if (result.hasUpdate) {
     if (statusEl) {
-      statusEl.innerHTML = `MCPanel: <span style="color:var(--yellow)">v${result.latest} available — </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View release</a>`;
+      statusEl.innerHTML = `MCPanel: <span style="color:var(--yellow)">v${result.latest} available - </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View release</a>`;
     }
     if (pillEl) pillEl.classList.remove('hidden');
     toast(`MCPanel v${result.latest} is available on GitHub`, 'info');
@@ -3213,13 +3930,13 @@ function applyCliUpdateResult(result) {
   const statusEl = document.getElementById('cli-update-status-text');
   if (result.hasUpdate) {
     if (statusEl) {
-      statusEl.innerHTML = `MCPanel-CLI: <span style="color:var(--yellow)">v${result.latest} available — </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View on GitHub</a>`;
+      statusEl.innerHTML = `MCPanel-CLI: <span style="color:var(--yellow)">v${result.latest} available - </span><a href="#" style="color:var(--purple-300)" onclick="window.mcpanel.openExternal('${result.url}');return false">View on GitHub</a>`;
     }
-    toast(`MCPanel-CLI v${result.latest} is available on PyPI`, 'info');
+    toast(`MCPanel-CLI v${result.latest} is available on GitHub`, 'info');
   } else if (result.latest) {
     if (statusEl) statusEl.textContent = `MCPanel-CLI: up to date (v${result.current})`;
   } else {
-    if (statusEl) statusEl.textContent = result.current ? `MCPanel-CLI: could not reach PyPI (v${result.current} installed)` : 'MCPanel-CLI: could not check version';
+    if (statusEl) statusEl.textContent = result.current ? `MCPanel-CLI: could not reach GitHub (v${result.current} installed)` : 'MCPanel-CLI: could not check version';
   }
 }
 
@@ -3260,7 +3977,7 @@ function showBuildToolsMissingModal() {
 function ignoreBuildToolsMissing() {
   closeModal('modal-buildtools-missing');
   disableSpigotFunctionality();
-  toast('Spigot support hidden — BuildTools could not be loaded', 'info');
+  toast('Spigot support hidden - BuildTools could not be loaded', 'info');
 }
 
 // result: { version: "installed" | "none", path?, error?, helpUrl? }
@@ -3271,11 +3988,11 @@ function applyBuildToolsResult(result) {
     return;
   }
   if (result.version === 'installed') {
-    if (statusEl) statusEl.textContent = 'BuildTools: installed and ready';
+    if (statusEl) statusEl.textContent = 'BuildTools: installed, operational';
     enableSpigotFunctionality();
   } else {
     if (statusEl) {
-      statusEl.innerHTML = `BuildTools: <span style="color:var(--red)">unavailable — ${result.error || 'could not be downloaded'}</span>`;
+      statusEl.innerHTML = `BuildTools: <span style="color:var(--red)">unavailable - ${result.error || 'could not be downloaded'}</span>`;
     }
     disableSpigotFunctionality();
   }
@@ -3515,9 +4232,39 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
     if (e.target === overlay) {
       const id = overlay.id;
+      if (id === 'modal-confirm') { resolveConfirmDialog(false); return; }
       if (id !== 'modal-download' && id !== 'modal-cli-missing' && id !== 'modal-buildtools-missing') closeModal(id);
     }
   });
+});
+
+// ─── Confirm dialog ───────────────────────────────────────────────────────────
+// Every destructive action goes through this instead of window.confirm(), so
+// deletions look like the rest of the app. Returns a promise resolving to
+// true only when the user hits the confirm button.
+let _confirmResolve = null;
+
+function confirmDialog({ title = 'Confirm', message = '', confirmLabel = 'Delete' } = {}) {
+  // A second dialog while one is open would orphan the first promise.
+  if (_confirmResolve) resolveConfirmDialog(false);
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-message').textContent = message;
+  document.getElementById('confirm-ok').textContent = confirmLabel;
+  openModal('modal-confirm');
+  return new Promise(resolve => { _confirmResolve = resolve; });
+}
+
+function resolveConfirmDialog(ok) {
+  closeModal('modal-confirm');
+  const resolve = _confirmResolve;
+  _confirmResolve = null;
+  if (resolve) resolve(ok);
+}
+
+// Escape cancels. Enter is deliberately not bound: key auto-repeat from
+// whatever opened the dialog could confirm a delete the user never read.
+document.addEventListener('keydown', e => {
+  if (_confirmResolve && e.key === 'Escape') resolveConfirmDialog(false);
 });
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -3588,6 +4335,10 @@ async function applyTheme(id) {
   document.getElementById('active-theme-name').textContent = theme ? theme.name : id;
   document.getElementById('reset-theme-btn').style.display = id !== defaultId ? '' : 'none';
   renderInstalledThemes();
+  // A theme may hint an icon via --app-icon; re-resolve if the user is on Auto.
+  applyAppIcon();
+  renderAppIconPicker();
+  window.mcpanel.logEvent(`Applied theme: ${theme?.name || id}`);
   toast(`Theme "${theme?.name || id}" applied`, 'success');
 }
 
@@ -3601,6 +4352,8 @@ async function resetTheme() {
   document.getElementById('active-theme-name').textContent = theme ? theme.name : defaultId;
   document.getElementById('reset-theme-btn').style.display = 'none';
   renderInstalledThemes();
+  applyAppIcon();
+  renderAppIconPicker();
   toast('Theme reset to default', 'info');
 }
 
@@ -3641,7 +4394,12 @@ async function renderInstalledThemes() {
 
 async function confirmDeleteTheme(id) {
   const theme = installedThemes.find(t => t.id === id);
-  if (!confirm(`Delete theme "${theme?.name || id}"? This cannot be undone.`)) return;
+  const ok = await confirmDialog({
+    title: 'Delete Theme',
+    message: `Delete the theme "${theme?.name || id}"?\n\nThis action cannot be undone.`,
+    confirmLabel: 'Delete Theme',
+  });
+  if (!ok) return;
   const r = await window.mcpanel.deleteTheme(id);
   if (r.error) { toast('Error: ' + r.error, 'error'); return; }
   if (config.activeTheme === id) await resetTheme();
@@ -3775,6 +4533,15 @@ async function openTerminal() {
     }
     _term.open(container);
     if (_termFit) _termFit.fit();
+    // Ctrl+Shift+C copies the selection instead of sending ^C to the shell.
+    _term.attachCustomKeyEventHandler(e => {
+      if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        const sel = _term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        return false; // handled — don't forward to the PTY
+      }
+      return true;
+    });
     _term.onData(data => window.__TAURI_INTERNALS__.invoke('pty_write', { data }).catch(() => {}));
     _term.onResize(({ rows, cols }) => {
       window.__TAURI_INTERNALS__.invoke('pty_resize', { rows, cols }).catch(() => {});
@@ -3904,6 +4671,7 @@ async function updateServersPageStats() {
   try {
     const stats = await window.mcpanel.getSystemStats();
     if (stats && !stats.error) {
+      systemCpu = { threads: stats.cpuThreads ?? null, cores: stats.cpuCores ?? null, freqMhz: stats.cpuFreqMhz ?? null, name: stats.cpuName ?? null };
       const ramPct = stats.totalRam > 0 ? Math.round((stats.usedRam / stats.totalRam) * 100) : 0;
       const ramValEl  = document.getElementById('sco-ram-val');
       const ramDetEl  = document.getElementById('sco-ram-detail');
@@ -3921,11 +4689,11 @@ async function updateServersPageStats() {
         ? `${(cpuFreq / 1000).toFixed(2)} GHz`
         : cpuFreq > 0 ? `${Math.round(cpuFreq)} MHz` : '';
       const cpuTooltip = [stats.cpuName, cpuFreqStr ? `@ ${cpuFreqStr}` : ''].filter(Boolean).join(' ');
-      if (cpuNameEl)  { cpuNameEl.textContent = stripCpuName(stats.cpuName) || '—'; cpuNameEl.title = cpuTooltip; }
+      if (cpuNameEl)  { cpuNameEl.textContent = stripCpuName(stats.cpuName) || '-'; cpuNameEl.title = cpuTooltip; }
       if (cpuCoresEl) {
         cpuCoresEl.textContent = stats.cpuCores != null
           ? `${stats.cpuCores}C / ${stats.cpuThreads}T`
-          : '—';
+          : '-';
         cpuCoresEl.title = cpuTooltip;
       }
       const cpuCardEl = document.getElementById('sco-cpu-card');
@@ -4195,7 +4963,12 @@ async function createBackup() {
 
 async function deleteBackup(backupName) {
   if (!currentServerId) return;
-  if (!confirm(`Delete backup "${backupName}"? This cannot be undone.`)) return;
+  const ok = await confirmDialog({
+    title: 'Delete Backup',
+    message: `Delete the backup "${backupName}"?\n\nThis action cannot be undone.`,
+    confirmLabel: 'Delete Backup',
+  });
+  if (!ok) return;
   const res = await window.mcpanel.deleteBackup(currentServerId, backupName);
   if (res.error) { toast('Failed to delete backup: ' + res.error, 'error'); return; }
   toast('Backup deleted');
@@ -4204,7 +4977,12 @@ async function deleteBackup(backupName) {
 
 async function restoreBackup(backupName) {
   if (!currentServerId) return;
-  if (!confirm(`Restore from "${backupName}"? This will overwrite current server files. Stop the server first if it's running.`)) return;
+  const ok = await confirmDialog({
+    title: 'Restore Backup',
+    message: `Restore from "${backupName}"?\n\nThis overwrites the current server files and cannot be undone. Stop the server first if it is running.`,
+    confirmLabel: 'Restore',
+  });
+  if (!ok) return;
   const wrap = document.getElementById('backup-progress-wrap');
   const fill = document.getElementById('backup-progress-fill');
   const text = document.getElementById('backup-progress-text');
@@ -4383,7 +5161,12 @@ async function saveSchedule() {
 }
 
 async function deleteSchedule(scheduleId) {
-  if (!confirm('Delete this scheduled task?')) return;
+  const ok = await confirmDialog({
+    title: 'Delete Schedule',
+    message: 'Delete this scheduled task?\n\nThis action cannot be undone.',
+    confirmLabel: 'Delete Schedule',
+  });
+  if (!ok) return;
   const res = await window.mcpanel.deleteSchedule(scheduleId);
   if (res.error) { toast('Failed to delete schedule: ' + res.error, 'error'); return; }
   toast('Schedule deleted');

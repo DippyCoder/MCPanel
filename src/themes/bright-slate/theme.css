@@ -1,10 +1,13 @@
 /* ═══════════════════════════════════════════════════════
-   Bright Slate — MCPanel Theme
+   Bright Slate - MCPanel Theme
    Author: DippyCoder
    A clean light theme with blue accents.
    ═══════════════════════════════════════════════════════ */
 
 :root {
+  color-scheme: light;
+  --app-icon: blue;
+
   --bg-base:      #f1f5f9;
   --bg-surface:   #ffffff;
   --bg-elevated:  #e2e8f0;
@@ -114,9 +117,9 @@ body { background: var(--bg-base); }
 .btn-primary {
   background: linear-gradient(135deg, #1d4ed8, var(--accent));
   color: #fff;
-  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 4px 14px rgba(var(--accent-rgb), 0.22);
 }
-.btn-primary:hover { box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5); }
+.btn-primary:hover { box-shadow: 0 5px 16px rgba(var(--accent-rgb), 0.3); }
 
 .btn-ghost {
   border-color: rgba(0,0,0,0.12);
@@ -124,15 +127,15 @@ body { background: var(--bg-base); }
   background: none;
 }
 .btn-ghost:hover {
-  border-color: rgba(37, 99, 235, 0.4);
+  border-color: var(--accent);
   color: var(--text-primary);
   background: var(--accent-dim);
 }
 
 .btn-sm { background: var(--bg-elevated); border-color: var(--border); color: var(--text-primary); }
-.btn-sm:hover { border-color: rgba(37, 99, 235, 0.4); background: var(--bg-hover); }
+.btn-sm:hover { border-color: var(--accent); background: var(--accent-dim); }
 .btn-xs { background: var(--bg-elevated); border-color: var(--border); color: var(--text-secondary); }
-.btn-xs:hover { border-color: rgba(37, 99, 235, 0.4); color: var(--text-primary); }
+.btn-xs:hover { border-color: var(--accent); color: var(--text-primary); background: var(--accent-dim); }
 .btn-ghost-sm { border-color: var(--border); color: var(--text-muted); }
 .btn-ghost-sm:hover { border-color: var(--border-focus); color: var(--text-primary); }
 
@@ -210,6 +213,7 @@ select option { background: #ffffff; color: #0f172a; }
 /* ── Semantic token overrides ───────────────────────── */
 :root {
   --online-color:   #16a34a;
+  --online-glow:    rgba(22,163,74,0.4);
   --offline-color:  var(--text-muted);
   --starting-color: #d97706;
   --starting-rgb:   217,119,6;
