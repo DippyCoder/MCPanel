@@ -2,20 +2,24 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod app_log;
 mod commands;
 
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            app_log::init(&app.package_info().version.to_string());
             let handle = app.handle().clone();
             app.manage(commands::AppState {
                 log_streamers: Mutex::new(HashMap::new()),
-                app_handle: handle,
+                app_handle: handle.clone(),
+                active_backup: Mutex::new(None),
             });
             app.manage(commands::PtyState {
                 master: Mutex::new(None),
                 writer: Mutex::new(None),
             });
+            tauri::async_runtime::spawn(commands::run_scheduler(handle));
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -41,6 +45,7 @@ pub fn run() {
             commands::browse_file,
             commands::install_cli,
             commands::get_app_log_path,
+            commands::log_event,
             commands::get_log_since,
             commands::open_terminal,
             commands::write_server_file,
@@ -50,6 +55,7 @@ pub fn run() {
             commands::create_server_file,
             commands::rename_server_file,
             commands::read_server_file,
+            commands::export_server_files,
             commands::pty_open,
             commands::pty_write,
             commands::pty_resize,
@@ -82,6 +88,19 @@ pub fn run() {
             commands::create_profile_file,
             commands::rename_profile_file,
             commands::upload_files_to_profile,
+            commands::export_profile_files,
+            commands::create_backup,
+            commands::list_backups,
+            commands::delete_backup,
+            commands::restore_backup,
+            commands::get_schedules,
+            commands::save_schedule,
+            commands::delete_schedule,
+            commands::run_schedule_now,
+            commands::get_app_settings,
+            commands::save_app_settings,
+            commands::shutdown_all_servers,
+            commands::list_system_fonts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

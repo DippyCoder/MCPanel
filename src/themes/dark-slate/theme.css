@@ -1,26 +1,27 @@
 /* ═══════════════════════════════════════════════════════
-   Dark Slate — MCPanel Theme
+   Dark Slate - MCPanel Theme
    Author: DippyCoder
-   A neutral dark theme with blue accents, no purple.
+   A neutral dark theme with blue accents.
    ═══════════════════════════════════════════════════════ */
 
 :root {
+  --app-icon: blue;
+
   --bg-base:      #0d0d0d;
   --bg-surface:   #141414;
   --bg-elevated:  #1c1c1c;
   --bg-card:      #16161680;
   --bg-hover:     #222222;
 
-  /* Replace all purple-* vars with blue equivalents */
-  --purple-900:   #0f172a;
-  --purple-800:   #1e3a5f;
-  --purple-700:   #1d4ed8;
-  --purple-600:   #2563eb;
-  --purple-500:   #3b82f6;
-  --purple-400:   #60a5fa;
-  --purple-300:   #93c5fd;
-  --purple-200:   #bfdbfe;
-  --purple-100:   #dbeafe;
+  --blue-900:   #0f172a;
+  --blue-800:   #1e3a5f;
+  --blue-700:   #1d4ed8;
+  --blue-600:   #2563eb;
+  --blue-500:   #3b82f6;
+  --blue-400:   #60a5fa;
+  --blue-300:   #93c5fd;
+  --blue-200:   #bfdbfe;
+  --blue-100:   #dbeafe;
 
   --accent:       #60a5fa;
   --accent-rgb:   96,165,250;
@@ -35,7 +36,7 @@
   --border:       rgba(255, 255, 255, 0.07);
   --border-focus: rgba(96, 165, 250, 0.5);
 
-  --shadow-purple: 0 4px 24px rgba(96, 165, 250, 0.15);
+  --shadow-blue: 0 4px 24px rgba(96, 165, 250, 0.15);
 }
 
 /* Scrollbar */
@@ -48,7 +49,7 @@
 
 /* Page heading gradient */
 .page-header h1 {
-  background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-accent) 100%);
+  background: var(--text-accent);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -67,7 +68,7 @@
 }
 .server-card:hover {
   border-color: rgba(96, 165, 250, 0.3);
-  box-shadow: var(--shadow-purple);
+  box-shadow: var(--shadow-blue);
 }
 
 /* Profile card */
@@ -76,22 +77,22 @@
 }
 .profile-card:hover {
   border-color: rgba(96, 165, 250, 0.3);
-  box-shadow: var(--shadow-purple);
+  box-shadow: var(--shadow-blue);
 }
 
 /* Buttons */
 .btn-primary {
-  background: linear-gradient(135deg, #1d4ed8, var(--accent));
-  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
+  background: linear-gradient(135deg, var(--blue-500), var(--blue-500));
+  box-shadow: 0 4px 14px rgba(var(--accent-rgb), 0.22);
 }
-.btn-primary:hover { box-shadow: 0 6px 20px rgba(37, 99, 235, 0.55); }
+.btn-primary:hover { box-shadow: 0 5px 16px rgba(var(--accent-rgb), 0.3); }
 
 .btn-ghost:hover {
-  border-color: rgba(96, 165, 250, 0.4);
+  border-color: var(--accent);
   background: var(--accent-dim);
 }
-.btn-sm:hover { border-color: rgba(96, 165, 250, 0.4); }
-.btn-xs:hover { border-color: rgba(96, 165, 250, 0.4); }
+.btn-sm:hover { border-color: var(--accent); background: var(--accent-dim); }
+.btn-xs:hover { border-color: var(--accent); background: var(--accent-dim); }
 .btn-ghost-sm:hover { border-color: var(--border-focus); }
 
 /* Quick ctrl buttons */
@@ -128,7 +129,7 @@
 .info-box {
   background: rgba(96, 165, 250, 0.08);
   border-color: rgba(96, 165, 250, 0.2);
-  color: var(--purple-200);
+  color: var(--blue-200);
 }
 
 /* Modal */
@@ -142,7 +143,7 @@
 .toast.info {
   background: rgba(23, 37, 84, 0.92);
   border-color: rgba(96, 165, 250, 0.3);
-  color: var(--purple-200);
+  color: var(--blue-200);
 }
 
 /* Field hints */
@@ -154,6 +155,7 @@
 /* ── Semantic token overrides ───────────────────────── */
 :root {
   --online-color:   #22c55e;
+  --online-glow:    rgba(34,197,94,0.4);
   --offline-color:  var(--text-muted);
   --starting-color: #fbbf24;
   --starting-rgb:   251,191,36;
@@ -165,7 +167,7 @@
 
   --info-box-bg:       rgba(96,165,250,0.08);
   --info-box-border:   rgba(96,165,250,0.2);
-  --info-box-text:     var(--purple-200);
+  --info-box-text:     var(--blue-200);
 
   --warning-box-bg:     rgba(234,179,8,0.08);
   --warning-box-border: rgba(234,179,8,0.28);
@@ -183,7 +185,7 @@
   --toast-error-text:     #fca5a5;
   --toast-info-bg:        rgba(23,37,84,0.92);
   --toast-info-border:    rgba(96,165,250,0.3);
-  --toast-info-text:      var(--purple-200);
+  --toast-info-text:      var(--blue-200);
 
   --bar-green-bg:  rgba(34,197,94,0.4);
   --bar-red-bg:    rgba(239,68,68,0.45);

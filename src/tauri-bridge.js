@@ -32,11 +32,20 @@
     return JSON.parse(raw);
   }
 
+  // mcpanel.json is the server's own manifest (id, dir, etc.) — not something
+  // a user should see or touch from the file browser.
+  function _stripMcpanelJson(nodes) {
+    if (!Array.isArray(nodes)) return nodes;
+    return nodes
+      .filter(n => n.name !== 'mcpanel.json')
+      .map(n => n.children ? { ...n, children: _stripMcpanelJson(n.children) } : n);
+  }
+
   // ─── Event bridge ────────────────────────────────────────────────────────────
   const _listeners = {};   // channel → [{original, wrapped, unlisten}]
 
   function on(channel, cb) {
-    const allowed = ['server-log', 'server-stopped', 'download-progress'];
+    const allowed = ['server-log', 'server-stopped', 'download-progress', 'backup-progress', 'schedule-fired'];
     if (!allowed.includes(channel)) return;
     if (!_listeners[channel]) _listeners[channel] = [];
     const wrapped = (e) => cb(e.payload);
@@ -194,6 +203,12 @@
       return Array.isArray(result) ? result : (result.jdks || []);
     },
 
+    // Which detected JDKs can actually build/run a given software+version —
+    // drives the Spigot JDK picker (BuildTools enforces an exact compile-time
+    // Java range, so silent auto-detection isn't enough there).
+    getJdkCompatibility: (software, version) =>
+      cli(['fetch', 'jdk-compat', '-sw', software, '-v', version]),
+
     browseJava: () => _invoke('browse_file', {
       title: 'Select Java Executable',
       extensions: ['*'],
@@ -230,7 +245,11 @@
       return JSON.parse(raw);
     },
 
-    getServerFileTree: (id) => cli(['fetch', 'files', '-id', id]),
+    getServerFileTree: async (id) => {
+      const r = await cli(['fetch', 'files', '-id', id]);
+      if (r && Array.isArray(r.tree)) r.tree = _stripMcpanelJson(r.tree);
+      return r;
+    },
 
     openTerminal: () => _invoke('open_terminal'),
     ptyOpen: () => _invoke('pty_open'),
@@ -262,6 +281,9 @@
     readServerFile: (id, relPath) =>
       _invoke('read_server_file', { id, relPath }),
 
+    exportServerFiles: (id, relPaths, destDir) =>
+      _invoke('export_server_files', { id, relPaths, destDir }),
+
     updateProfile: (id, data) =>
       _invoke('update_profile', { id, ...data }),
     getProfileFileTree: (id) =>
@@ -280,6 +302,8 @@
       _invoke('rename_profile_file', { id, oldPath, newPath }),
     uploadFilesToProfile: (id, srcPaths, destDir) =>
       _invoke('upload_files_to_profile', { id, srcPaths, destDir }),
+    exportProfileFiles: (id, relPaths, destDir) =>
+      _invoke('export_profile_files', { id, relPaths, destDir }),
 
     createProfileFromServer: async (id, profileData, selectedPaths) => {
       const args = [
@@ -355,6 +379,10 @@
       }
     },
 
+    // BuildTools (SpigotMC) — installed/latest build + manual update trigger
+    getBuildToolsVersion: () => cli(['buildtools', 'version']),
+    updateBuildTools: () => cli(['buildtools', 'update']),
+
     openExternal: (url) => _invoke('open_external', { url }),
 
     // Open server/profile folders via opener plugin
@@ -388,10 +416,57 @@
       const path = await _invoke('get_app_log_path');
       await _invoke('open_path', { path });
     },
+    logEvent: (message, level = 'info') => _invoke('log_event', { level, message }),
+
+    // Backups
+    createBackup: (id) => _invoke('create_backup', { id }),
+    listBackups: (id) => _invoke('list_backups', { id }),
+    deleteBackup: (id, backupName) => _invoke('delete_backup', { id, backupName }),
+    restoreBackup: (id, backupName) => _invoke('restore_backup', { id, backupName }),
+
+    // Schedules
+    getSchedules: (serverId) => _invoke('get_schedules', { serverId }),
+    saveSchedule: (schedule) => _invoke('save_schedule', { schedule }),
+    deleteSchedule: (scheduleId) => _invoke('delete_schedule', { scheduleId }),
+    runScheduleNow: (serverId, action, command) => _invoke('run_schedule_now', { serverId, action, command: command || null }),
+
+    // App settings
+    getAppSettings: () => _invoke('get_app_settings'),
+    saveAppSettings: (settings) => _invoke('save_app_settings', { settings }),
+    listSystemFonts: () => _invoke('list_system_fonts'),
+    shutdownAllServers: () => _invoke('shutdown_all_servers'),
 
     // Events
     on,
     off,
+
+    // Plugin / Mod search + install — routed through mcpanel-cli's own
+    // urllib-backed API so it isn't subject to browser CORS at all (Spiget's
+    // policy blocks the standard User-Agent header on a plain webview fetch).
+    searchPlugins: (platform, query, opts = {}) => {
+      const args = ['search', 'plugins', platform, query || ''];
+      if (opts.software) args.push('-sw', opts.software);
+      if (opts.mcVersion) args.push('-v', opts.mcVersion);
+      if (opts.limit) args.push('-n', String(opts.limit));
+      if (opts.offset) args.push('-o', String(opts.offset));
+      return cli(args);
+    },
+    installPlugin: (platform, slug, opts = {}) => {
+      const args = ['install', 'plugin', platform, slug];
+      if (opts.serverId) args.push('-id', opts.serverId);
+      if (opts.profileId) args.push('--profile-id', opts.profileId);
+      if (opts.mcVersion) args.push('-v', opts.mcVersion);
+      if (opts.owner) args.push('--owner', opts.owner);
+      if (opts.versionId) args.push('--version', String(opts.versionId));
+      return cli(args);
+    },
+    pluginInfo: (platform, slug, opts = {}) => {
+      const args = ['info', 'plugin', platform, slug];
+      if (opts.owner) args.push('--owner', opts.owner);
+      if (opts.limit) args.push('-n', String(opts.limit));
+      if (opts.offset) args.push('-o', String(opts.offset));
+      return cli(args);
+    },
 
     // Window
     minimize,

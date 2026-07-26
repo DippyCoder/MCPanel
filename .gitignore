@@ -4,5 +4,4 @@ dist/
 Thumbs.db
 *.log
 package-lock.json
-PRIVACY.md
 src-tauri/target/

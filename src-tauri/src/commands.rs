@@ -1,13 +1,19 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 // ─── App State ────────────────────────────────────────────────────────────────
+
+pub struct BackupInProgress {
+    pub pid: u32,
+    pub zip_path: String,
+}
 
 pub struct AppState {
     pub log_streamers: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     pub app_handle: AppHandle,
+    pub active_backup: Mutex<Option<BackupInProgress>>,
 }
 
 pub struct PtyState {
@@ -62,23 +68,8 @@ fn mcpanel_themes_dir() -> String {
     format!("{}/themes", mcpanel_home())
 }
 
-fn app_log_path() -> String {
-    format!("{}/mcpanel-app.log", mcpanel_home())
-}
-
-fn log_to_file(line: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(app_log_path())
-    {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let _ = writeln!(f, "[{}] {}", ts, line);
-    }
+fn app_logs_dir() -> String {
+    format!("{}/logs", mcpanel_home())
 }
 
 // ─── CLI runner ───────────────────────────────────────────────────────────────
@@ -290,13 +281,14 @@ pub async fn check_cli() -> Value {
     let cli_path = match find_cli_path() {
         Some(p) => p,
         None => {
+            crate::app_log::warn("check_cli: MCPanel-CLI not found on this system");
             return serde_json::json!({
                 "ok": false,
                 "error": "mcpanel CLI not found. Install it from https://github.com/DippyCoder/mcpanel-cli"
             });
         }
     };
-    log_to_file(&format!("check_cli: found CLI at {}", cli_path.display()));
+    crate::app_log::info(format!("check_cli: found CLI at {}", cli_path.display()));
 
     // STEP 2 — the CLI exists, so detection already succeeded (ok:true). Reading
     // the version is best-effort enrichment for the UI. Because we exec the
@@ -304,20 +296,18 @@ pub async fn check_cli() -> Value {
     // can't hit the GUI; timeout + kill_on_drop guard against a hung process.
     let mut result = serde_json::json!({ "ok": true });
 
-    if let Ok(child) = mcpanel_async_cmd()
-        .args(["api", "version"])
-        .kill_on_drop(true)
-        .spawn()
-    {
-        if let Ok(Ok(out)) = timeout(Duration::from_secs(3), child.wait_with_output()).await {
-            if out.status.success() {
-                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if let Some(v) = serde_json::from_str::<Value>(&stdout)
-                    .ok()
-                    .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
-                {
-                    result["version"] = Value::String(v);
-                }
+    if let Ok(Ok(out)) = timeout(
+        Duration::from_secs(3),
+        mcpanel_async_cmd().args(["api", "version"]).output(),
+    ).await {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(v) = serde_json::from_str::<Value>(&stdout)
+                .ok()
+                .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+            {
+                crate::app_log::note_cli_version(&v);
+                result["version"] = Value::String(v);
             }
         }
     }
@@ -329,7 +319,12 @@ pub async fn check_cli() -> Value {
 pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     let mut argv = vec!["api".to_string()];
     argv.extend(args);
-    log_to_file(&format!("run_cli: mcpanel {}", argv.join(" ")));
+    // Status/file-tree polling happens every few seconds per server and is
+    // noise when it's succeeding — only worth a log line when it fails.
+    let is_fetch = argv.get(1).map(|s| s == "fetch").unwrap_or(false);
+    if !is_fetch {
+        crate::app_log::info(format!("run_cli: mcpanel {}", argv.join(" ")));
+    }
 
     let out = mcpanel_cmd()
         .args(&argv)
@@ -339,10 +334,16 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if stdout.is_empty() && !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        log_to_file(&format!("  error: {}", stderr));
+        if is_fetch {
+            crate::app_log::error(format!("run_cli: mcpanel {} failed: {}", argv.join(" "), stderr));
+        } else {
+            crate::app_log::error(format!("  error: {}", stderr));
+        }
         return Err(stderr);
     }
-    log_to_file(&format!("  ok ({} bytes)", stdout.len()));
+    if !is_fetch {
+        crate::app_log::info(format!("  ok ({} bytes)", stdout.len()));
+    }
     Ok(stdout)
 }
 
@@ -381,6 +382,32 @@ fn get_server_dir(id: &str) -> Result<String, String> {
         .ok_or_else(|| "Server not found".into())
 }
 
+// Mirrors mcpanel-cli's config.write_server_manifest: a copy of this server's
+// config entry (minus `dir`, so the manifest stays valid if the folder is
+// moved) written into its own directory as mcpanel.json. Some server
+// mutations happen natively here in Rust rather than shelling out to the
+// CLI, so this needs to run on both sides to keep the manifest in sync with
+// whichever app the user touched last.
+fn write_server_manifest(server: &Value) {
+    let dir = match server.get("dir").and_then(|d| d.as_str()) {
+        Some(d) if !d.is_empty() => d,
+        _ => return,
+    };
+    let mut manifest = server.clone();
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.remove("dir");
+    }
+    let json = match serde_json::to_string_pretty(&manifest) {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+    let path = format!("{}/mcpanel.json", dir);
+    let tmp = format!("{}.tmp", path);
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
 // ─── Update server (direct config write) ─────────────────────────────────────
 
 #[tauri::command]
@@ -395,6 +422,14 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
         .ok_or("Server not found")?;
 
     if let Some(obj) = updates.as_object() {
+        let fields: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        if !fields.is_empty() {
+            let name = srv["name"].as_str().unwrap_or(&id);
+            crate::app_log::info(format!(
+                "Updated server \"{}\" ({}) -id {}",
+                name, fields.join(", "), id
+            ));
+        }
         for (k, v) in obj {
             srv[k] = v.clone();
         }
@@ -456,6 +491,7 @@ pub fn update_server(id: String, updates: Value) -> Result<String, String> {
 
     let server = srv.clone();
     write_config(&cfg)?;
+    write_server_manifest(&server);
     Ok(serde_json::json!({"success": true, "server": server}).to_string())
 }
 
@@ -508,6 +544,7 @@ pub async fn duplicate_server(id: String, new_name: String, app: AppHandle) -> R
         .ok_or("No servers array")?
         .push(new_srv.clone());
     write_config(&cfg)?;
+    write_server_manifest(&new_srv);
 
     let _ = app.emit(
         "download-progress",
@@ -517,12 +554,18 @@ pub async fn duplicate_server(id: String, new_name: String, app: AppHandle) -> R
     Ok(serde_json::json!({"success": true, "server": new_srv}).to_string())
 }
 
+// Skips profile.json and mcpanel.json — matches mcpanel-cli's util.copy_dir.
+// The manifest is skipped so the duplicate gets its own fresh one (written by
+// write_server_manifest above) instead of inheriting the source's id.
 fn copy_dir_all(src: &str, dst: &str) -> Result<(), String> {
     for entry in
         std::fs::read_dir(src).map_err(|e| format!("read_dir {}: {}", src, e))?
     {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
+        if name == "profile.json" || name == "mcpanel.json" {
+            continue;
+        }
         let dest_path = format!("{}/{}", dst, name.to_string_lossy());
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             std::fs::create_dir_all(&dest_path).map_err(|e| e.to_string())?;
@@ -656,14 +699,25 @@ async fn stream_log_task(id: String, app: AppHandle, run_dir: String) {
 
 #[tauri::command]
 pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, String> {
+    // Spigot has no prebuilt jar — the CLI compiles it locally with BuildTools,
+    // which takes minutes rather than the few seconds a normal jar download takes.
+    let is_spigot = args.windows(2).any(|w| {
+        (w[0] == "-sw" || w[0] == "--software") && w[1] == "spigot"
+    });
+    let status_msg = if is_spigot {
+        "Building Spigot with BuildTools… (this can take several minutes)"
+    } else {
+        "Downloading server jar…"
+    };
+
     let _ = app.emit(
         "download-progress",
-        serde_json::json!({"id": "__creating__", "progress": 5, "status": "Downloading server jar…"}),
+        serde_json::json!({"id": "__creating__", "progress": 5, "status": status_msg}),
     );
 
     let mut argv = vec!["api".into(), "create".into(), "server".into()];
     argv.extend(args);
-    log_to_file(&format!("create_server: mcpanel {}", argv.join(" ")));
+    crate::app_log::info(format!("create_server: mcpanel {}", argv.join(" ")));
 
     // Slow fake progress ticker while CLI runs
     let app2 = app.clone();
@@ -674,7 +728,7 @@ pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, 
             p = (p + 12).min(88);
             let _ = app2.emit(
                 "download-progress",
-                serde_json::json!({"id": "__creating__", "progress": p, "status": "Downloading server jar…"}),
+                serde_json::json!({"id": "__creating__", "progress": p, "status": status_msg}),
             );
         }
     });
@@ -700,10 +754,10 @@ pub async fn create_server(args: Vec<String>, app: AppHandle) -> Result<String, 
 
     if stdout.is_empty() && !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        log_to_file(&format!("  error: {}", stderr));
+        crate::app_log::error(format!("  error: {}", stderr));
         return Err(stderr);
     }
-    log_to_file(&format!("  ok ({} bytes)", stdout.len()));
+    crate::app_log::info(format!("  ok ({} bytes)", stdout.len()));
     Ok(stdout)
 }
 
@@ -1334,7 +1388,7 @@ pub async fn install_cli() -> Result<String, String> {
         { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
         match cmd.output().await {
             Ok(o) if o.status.success() => {
-                log_to_file("install_cli: mcpanel-cli installed from GitHub zip");
+                crate::app_log::info("install_cli: mcpanel-cli installed from GitHub zip");
 
                 // On Windows, pip --user installs to a Scripts dir that isn't on PATH
                 // by default. Ask the same Python interpreter where it put the scripts,
@@ -1369,7 +1423,7 @@ pub async fn install_cli() -> Result<String, String> {
                                        "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
                                 .creation_flags(0x08000000)
                                 .output().await;
-                            log_to_file(&format!("install_cli: added {} to PATH", scripts));
+                            crate::app_log::info(format!("install_cli: added {} to PATH", scripts));
                         }
                     }
                 }
@@ -1452,6 +1506,26 @@ pub fn open_terminal() -> Result<(), String> {
 
 // ─── Drag-drop upload (Tauri intercepts OS drops, gives us paths) ─────────────
 
+// Copies a single dropped path into dst, recursing into directories so a
+// dragged folder (and its contents) lands intact rather than being silently
+// skipped. src_paths from a multi-select OS drop are handled by the caller
+// looping this per path.
+fn copy_dropped_path(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_dropped_path(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else if src.is_file() {
+        std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub fn upload_files_to_server(id: String, src_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
     if !dest_dir.is_empty() && (dest_dir.contains("..") || dest_dir.starts_with('/')) {
@@ -1463,12 +1537,81 @@ pub fn upload_files_to_server(id: String, src_paths: Vec<String>, dest_dir: Stri
     std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
     for src_path in &src_paths {
         let src = std::path::Path::new(src_path);
-        if src.is_file() {
-            if let Some(name) = src.file_name() {
-                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
-            }
+        if let Some(name) = src.file_name() {
+            copy_dropped_path(src, &dest_base.join(name))?;
         }
     }
+    crate::app_log::info(format!(
+        "Uploaded {} item(s) to server{} -id {}",
+        src_paths.len(),
+        if dest_dir.is_empty() { String::new() } else { format!(" (/{})", dest_dir) },
+        id
+    ));
+    Ok(())
+}
+
+// ─── Export (download to an OS folder) ───────────────────────────────────────
+
+// Picks a non-colliding name inside dest for `name`: "world" -> "world (1)".
+// The export target is a user folder we don't own, so silently overwriting
+// (or merging into) whatever is already there would be destructive.
+fn unique_export_path(dest: &std::path::Path, name: &std::ffi::OsStr) -> std::path::PathBuf {
+    let first = dest.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let name = name.to_string_lossy();
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{}", e)),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 1..1000 {
+        let candidate = dest.join(format!("{} ({}){}", stem, n, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
+fn export_paths(base: &std::path::Path, rel_paths: &[String], dest_dir: &str) -> Result<(), String> {
+    let dest = std::path::Path::new(dest_dir);
+    if !dest.is_dir() {
+        return Err("Destination folder not found".into());
+    }
+    for rel in rel_paths {
+        if rel.contains("..") || rel.starts_with('/') {
+            return Err("Invalid path".into());
+        }
+        let src = base.join(rel);
+        if !src.exists() {
+            return Err(format!("Not found: {}", rel));
+        }
+        let Some(name) = src.file_name() else { continue };
+        copy_dropped_path(&src, &unique_export_path(dest, name))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_server_files(id: String, rel_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    let server_dir = get_server_dir(&id)?;
+    export_paths(std::path::Path::new(&server_dir), &rel_paths, &dest_dir)?;
+    crate::app_log::info(format!(
+        "Downloaded {} item(s) from server -id {} to {}",
+        rel_paths.len(), id, dest_dir
+    ));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_profile_files(id: String, rel_paths: Vec<String>, dest_dir: String) -> Result<(), String> {
+    let profile_dir = get_profile_dir(&id)?;
+    export_paths(std::path::Path::new(&profile_dir), &rel_paths, &dest_dir)?;
+    crate::app_log::info(format!(
+        "Downloaded {} item(s) from profile -id {} to {}",
+        rel_paths.len(), id, dest_dir
+    ));
     Ok(())
 }
 
@@ -1705,12 +1848,16 @@ pub fn upload_files_to_profile(id: String, src_paths: Vec<String>, dest_dir: Str
     std::fs::create_dir_all(&dest_base).map_err(|e| e.to_string())?;
     for src_path in &src_paths {
         let src = std::path::Path::new(src_path);
-        if src.is_file() {
-            if let Some(name) = src.file_name() {
-                std::fs::copy(src, dest_base.join(name)).map_err(|e| e.to_string())?;
-            }
+        if let Some(name) = src.file_name() {
+            copy_dropped_path(src, &dest_base.join(name))?;
         }
     }
+    crate::app_log::info(format!(
+        "Uploaded {} item(s) to profile{} -id {}",
+        src_paths.len(),
+        if dest_dir.is_empty() { String::new() } else { format!(" (/{})", dest_dir) },
+        id
+    ));
     Ok(())
 }
 
@@ -1718,7 +1865,18 @@ pub fn upload_files_to_profile(id: String, src_paths: Vec<String>, dest_dir: Str
 
 #[tauri::command]
 pub fn get_app_log_path() -> String {
-    app_log_path()
+    app_logs_dir()
+}
+
+// Lets the frontend record UI-level events (opening a server's panel, etc.)
+// that have no natural Rust command of their own to hang a log line off of.
+#[tauri::command]
+pub fn log_event(level: String, message: String) {
+    match level.as_str() {
+        "warn" => crate::app_log::warn(message),
+        "error" => crate::app_log::error(message),
+        _ => crate::app_log::info(message),
+    }
 }
 
 // ─── Server start time (reads run/<id>.json directly, no CLI round-trip) ─────
@@ -1824,7 +1982,131 @@ pub fn pty_close(state: tauri::State<'_, PtyState>) {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
+    // Cancel any in-progress backup and delete the partial zip
+    if let Ok(mut guard) = app.state::<AppState>().active_backup.lock() {
+        if let Some(bkp) = guard.take() {
+            #[cfg(unix)]
+            { let _ = std::process::Command::new("kill").args(["-9", &bkp.pid.to_string()]).status(); }
+            #[cfg(windows)]
+            { let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &bkp.pid.to_string()]).status(); }
+            if !bkp.zip_path.is_empty() {
+                let _ = std::fs::remove_file(&bkp.zip_path);
+            }
+        }
+    }
     app.exit(0);
+}
+
+// ─── App settings ─────────────────────────────────────────────────────────────
+
+fn app_settings_path() -> String {
+    format!("{}/app-settings.json", mcpanel_home())
+}
+
+#[tauri::command]
+pub fn get_app_settings() -> Value {
+    let raw = std::fs::read_to_string(app_settings_path()).unwrap_or_else(|_| "{}".into());
+    let mut v: Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    if v.get("runInBackground").is_none() {
+        v["runInBackground"] = Value::Bool(true);
+    }
+    if v.get("fonts").is_none() {
+        v["fonts"] = serde_json::json!({"display": "Poppins", "displayWeight": "400", "mono": "JetBrains Mono", "monoWeight": "400"});
+    }
+    v
+}
+
+#[tauri::command]
+pub fn save_app_settings(settings: Value) -> Value {
+    let home = mcpanel_home();
+    if let Err(e) = std::fs::create_dir_all(&home) {
+        return serde_json::json!({"error": e.to_string()});
+    }
+
+    let old = std::fs::read_to_string(app_settings_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let changed = changed_setting_keys(old.as_ref(), &settings);
+    if !changed.is_empty() {
+        crate::app_log::info(format!("Settings updated: {}", changed.join(", ")));
+    }
+
+    let json = serde_json::to_string_pretty(&settings).unwrap_or_default();
+    match std::fs::write(app_settings_path(), json) {
+        Ok(_) => serde_json::json!({"success": true}),
+        Err(e) => serde_json::json!({"error": e.to_string()}),
+    }
+}
+
+// Names only, not values — some settings (fonts, etc.) are nested objects
+// that would be noisy to log in full.
+fn changed_setting_keys(old: Option<&Value>, new: &Value) -> Vec<String> {
+    let Some(new_obj) = new.as_object() else { return vec![] };
+    let old_obj = old.and_then(|v| v.as_object());
+    new_obj
+        .iter()
+        .filter(|(k, v)| old_obj.and_then(|o| o.get(k.as_str())) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+#[tauri::command]
+pub async fn shutdown_all_servers() -> Value {
+    let out = mcpanel_async_cmd().args(["api", "shutdown"]).output().await;
+    match out {
+        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| serde_json::json!({"success": true})),
+        Err(e) => serde_json::json!({"error": e.to_string()}),
+    }
+}
+
+// ─── System fonts ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_system_fonts() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[System.Drawing.FontFamily]::Families | Select-Object -ExpandProperty Name",
+            ])
+            .output();
+        if let Ok(o) = output {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut fonts: Vec<String> = text
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            fonts.dedup();
+            return fonts;
+        }
+        return vec![];
+    }
+    #[cfg(not(windows))]
+    {
+        let output = std::process::Command::new("fc-list")
+            .args(["--format", "%{family}\n"])
+            .output();
+        if let Ok(o) = output {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut seen = std::collections::HashSet::new();
+            let mut fonts: Vec<String> = Vec::new();
+            for line in text.lines() {
+                // fontconfig may give comma-separated names for multi-script families; take the first
+                let name = line.split(',').next().unwrap_or("").trim().to_string();
+                if !name.is_empty() && seen.insert(name.clone()) {
+                    fonts.push(name);
+                }
+            }
+            fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            return fonts;
+        }
+        return vec![];
+    }
 }
 
 // ─── Velocity proxy link ──────────────────────────────────────────────────────
@@ -1939,41 +2221,72 @@ fn read_velocity_secret_str(velocity_dir: &str) -> Option<String> {
 
 fn update_velocity_toml(contents: &str, server_name: &str, address: &str, priority: u64) -> Result<String, String> {
     let lines: Vec<&str> = contents.lines().collect();
-    let (try_start, try_end, mut entries) = find_velocity_try_array(&lines)
-        .ok_or("Could not find try = [...] in [servers] section of velocity.toml")?;
 
-    let server_entry_exists = lines.iter().any(|l| {
-        let t = l.trim();
-        t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
-    });
+    if let Some((try_start, try_end, mut entries)) = find_velocity_try_array(&lines) {
+        let server_entry_exists = lines.iter().any(|l| {
+            let t = l.trim();
+            t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
+        });
 
-    if !entries.contains(&server_name.to_string()) {
-        let pos = (priority as usize).min(entries.len());
-        entries.insert(pos, server_name.to_string());
-    }
-
-    let try_line = format!(
-        "try = [{}]",
-        entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
-    );
-
-    let mut result = String::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if i == try_start {
-            if !server_entry_exists {
-                result.push_str(&format!("{} = \"{}\"\n", server_name, address));
-            }
-            result.push_str(&try_line);
-            result.push('\n');
-            i = try_end + 1;
-            continue;
+        if !entries.contains(&server_name.to_string()) {
+            let pos = (priority as usize).min(entries.len());
+            entries.insert(pos, server_name.to_string());
         }
-        result.push_str(lines[i]);
-        result.push('\n');
-        i += 1;
+
+        let try_line = format!(
+            "try = [{}]",
+            entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
+        );
+
+        let mut result = String::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if i == try_start {
+                if !server_entry_exists {
+                    result.push_str(&format!("{} = \"{}\"\n", server_name, address));
+                }
+                result.push_str(&try_line);
+                result.push('\n');
+                i = try_end + 1;
+                continue;
+            }
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+        return Ok(result);
     }
-    Ok(result)
+
+    // No [servers]/try = [...] found. This is expected (not an error) when Velocity
+    // has never been started: velocity.toml only gets its full default template —
+    // including the [servers] section — merged in by Velocity's own config loader
+    // on first run. mcpanel-cli's initial velocity.toml (written at server-creation
+    // time, before the jar has ever executed) only contains a `bind = "..."` line.
+    // Rather than failing the link, create the section ourselves.
+    let entry_line = format!("{} = \"{}\"", server_name, address);
+    let try_line = format!("try = [\"{}\"]", server_name);
+
+    if let Some(idx) = lines.iter().position(|l| l.trim() == "[servers]") {
+        let mut result = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            result.push_str(line);
+            result.push('\n');
+            if i == idx {
+                result.push_str(&entry_line);
+                result.push('\n');
+                result.push_str(&try_line);
+                result.push('\n');
+            }
+        }
+        Ok(result)
+    } else {
+        let mut result = contents.trim_end().to_string();
+        if !result.is_empty() {
+            result.push_str("\n\n");
+        }
+        result.push_str(&format!("[servers]\n{}\n{}\n", entry_line, try_line));
+        Ok(result)
+    }
 }
 
 fn ensure_velocity_forwarding_modern(contents: &str) -> String {
@@ -2093,6 +2406,16 @@ pub fn link_to_proxy(
         _ => format!("127.0.0.1:{}", port),
     };
 
+    // The forwarding secret (and the [servers]/try = [...] section handled below)
+    // only exist once Velocity has generated its full config, which happens on its
+    // own first run — not at server-creation time. Check this up front: without a
+    // real secret, linking would "succeed" but leave modern forwarding silently
+    // broken (empty secret in paper-global.yml).
+    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
+    if secret.is_empty() {
+        return serde_json::json!({"error": "This Velocity proxy hasn't been started yet, so it hasn't generated its forwarding secret. Start it once, then try linking again."});
+    }
+
     // Update velocity.toml
     let toml_path = format!("{}/velocity.toml", velocity_dir);
     let toml_contents = match std::fs::read_to_string(&toml_path) {
@@ -2129,7 +2452,6 @@ pub fn link_to_proxy(
     }
 
     // Update paper-global.yml with forwarding secret
-    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
     let paper_global_path = format!("{}/config/paper-global.yml", paper_dir);
     if let Ok(paper_global) = std::fs::read_to_string(&paper_global_path) {
         let updated = update_paper_global_yml(&paper_global, &secret);
@@ -2233,15 +2555,42 @@ fn get_system_stats_linux() -> Value {
         .and_then(|s| s.split_whitespace().next().and_then(|n| n.parse().ok()))
         .unwrap_or(0.0);
 
-    let cpu_count = std::fs::read_to_string("/proc/cpuinfo")
-        .unwrap_or_default()
-        .lines()
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+
+    let cpu_name = cpuinfo.lines()
+        .find(|l| l.starts_with("model name"))
+        .and_then(|l| l.split(':').nth(1))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    let cpu_threads = cpuinfo.lines()
         .filter(|l| l.starts_with("processor"))
         .count()
         .max(1);
 
-    let cpu_pct = ((load1m / cpu_count as f64) * 1000.0).round() / 10.0;
+    let cores_per_socket: usize = cpuinfo.lines()
+        .find(|l| l.starts_with("cpu cores"))
+        .and_then(|l| l.split(':').nth(1))
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(cpu_threads);
+
+    let mut phys_ids: Vec<&str> = cpuinfo.lines()
+        .filter(|l| l.starts_with("physical id"))
+        .filter_map(|l| l.split(':').nth(1).map(|s| s.trim()))
+        .collect();
+    phys_ids.sort();
+    phys_ids.dedup();
+    let cpu_cores = cores_per_socket * phys_ids.len().max(1);
+
+    let cpu_pct = ((load1m / cpu_threads as f64) * 1000.0).round() / 10.0;
     let cpu_pct = cpu_pct.min(100.0);
+
+    let cpu_freq_mhz: f64 = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|khz| khz as f64 / 1000.0)
+        .unwrap_or(0.0);
+
     let used_ram = total_ram.saturating_sub(avail_ram);
 
     serde_json::json!({
@@ -2250,6 +2599,10 @@ fn get_system_stats_linux() -> Value {
         "usedRam": used_ram,
         "cpuPct": cpu_pct,
         "loadAvg": load1m,
+        "cpuName": cpu_name,
+        "cpuCores": cpu_cores,
+        "cpuThreads": cpu_threads,
+        "cpuFreqMhz": cpu_freq_mhz,
     })
 }
 
@@ -2334,6 +2687,28 @@ fn get_system_stats_windows() -> Value {
         }
     };
 
+    let parse_wmic = |args: &[&str], prefix: &str| -> Option<String> {
+        std::process::Command::new("wmic")
+            .args(args)
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .find(|l| l.starts_with(prefix))
+                    .map(|l| l[prefix.len()..].trim().to_string())
+            })
+    };
+
+    let cpu_name = parse_wmic(&["cpu", "get", "Name", "/value"], "Name=")
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+    let cpu_cores: u32 = parse_wmic(&["cpu", "get", "NumberOfCores", "/value"], "NumberOfCores=")
+        .and_then(|s| s.parse().ok()).unwrap_or(1);
+    let cpu_threads: u32 = parse_wmic(&["cpu", "get", "NumberOfLogicalProcessors", "/value"], "NumberOfLogicalProcessors=")
+        .and_then(|s| s.parse().ok()).unwrap_or(1);
+    let cpu_freq_mhz: f64 = parse_wmic(&["cpu", "get", "MaxClockSpeed", "/value"], "MaxClockSpeed=")
+        .and_then(|s| s.parse().ok()).unwrap_or(0.0);
+
     let used_ram = total_ram.saturating_sub(avail_ram);
     serde_json::json!({
         "totalRam": total_ram,
@@ -2341,6 +2716,10 @@ fn get_system_stats_windows() -> Value {
         "usedRam": used_ram,
         "cpuPct": cpu_pct,
         "loadAvg": cpu_pct,
+        "cpuName": cpu_name,
+        "cpuCores": cpu_cores,
+        "cpuThreads": cpu_threads,
+        "cpuFreqMhz": cpu_freq_mhz,
     })
 }
 
@@ -2398,6 +2777,29 @@ fn get_system_stats_macos() -> Value {
         .unwrap_or(1.0_f64.into());
 
     let cpu_pct = ((load1m / cpu_count) * 100.0).min(100.0).round();
+
+    let cpu_name = std::process::Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    let cpu_cores: u32 = std::process::Command::new("sysctl")
+        .args(["-n", "hw.physicalcpu"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(1);
+
+    let cpu_freq_mhz: f64 = std::process::Command::new("sysctl")
+        .args(["-n", "hw.cpufrequency_max"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+        .map(|hz| hz as f64 / 1_000_000.0)
+        .unwrap_or(0.0);
+
     let used_ram = total_ram.saturating_sub(avail_ram);
 
     serde_json::json!({
@@ -2406,5 +2808,256 @@ fn get_system_stats_macos() -> Value {
         "usedRam": used_ram,
         "cpuPct": cpu_pct,
         "loadAvg": load1m,
+        "cpuName": cpu_name,
+        "cpuCores": cpu_cores,
+        "cpuThreads": cpu_count as u32,
+        "cpuFreqMhz": cpu_freq_mhz,
     })
+}
+
+// ─── Backup system (CLI-backed) ───────────────────────────────────────────────
+
+fn server_backups_dir(server_id: &str) -> String {
+    format!("{}/backups/{}", mcpanel_home(), server_id)
+}
+
+#[tauri::command]
+pub async fn create_backup(id: String, app: AppHandle) -> Value {
+    use tokio::io::AsyncBufReadExt;
+
+    let backup_dir = server_backups_dir(&id);
+    if let Err(e) = std::fs::create_dir_all(&backup_dir) {
+        return serde_json::json!({"error": e.to_string()});
+    }
+
+    let mut child = match mcpanel_async_cmd()
+        .args(["api", "backup", "create", "-id", &id])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": e.to_string()}),
+    };
+
+    let pid = child.id().unwrap_or(0);
+    {
+        let state = app.state::<AppState>();
+        *state.active_backup.lock().unwrap() = Some(BackupInProgress {
+            pid,
+            zip_path: String::new(), // filled when we see the backup name in progress
+        });
+    }
+
+    let stdout = child.stdout.take().unwrap();
+    let reader = tokio::io::BufReader::new(stdout);
+    let mut lines = reader.lines();
+    let mut final_result = serde_json::json!({"error": "Backup produced no output"});
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Ok(val) = serde_json::from_str::<Value>(&line) {
+            let pct = val["progress"].as_u64().unwrap_or(0);
+            let status = val["status"].as_str().unwrap_or("").to_string();
+            let _ = app.emit("backup-progress", serde_json::json!({"id": &id, "progress": pct, "status": &status}));
+            if val.get("success").is_some() || val.get("error").is_some() {
+                final_result = val;
+            }
+        }
+    }
+    let _ = child.wait().await;
+
+    {
+        let state = app.state::<AppState>();
+        *state.active_backup.lock().unwrap() = None;
+    }
+    final_result
+}
+
+#[tauri::command]
+pub async fn list_backups(id: String) -> Value {
+    let out = mcpanel_async_cmd().args(["api", "backup", "list", "-id", &id]).output().await;
+    match out {
+        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| serde_json::json!({"backups": []})),
+        Err(e) => serde_json::json!({"error": e.to_string()}),
+    }
+}
+
+#[tauri::command]
+pub async fn delete_backup(id: String, backup_name: String) -> Value {
+    let out = mcpanel_async_cmd().args(["api", "backup", "delete", "-id", &id, "-name", &backup_name]).output().await;
+    match out {
+        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| serde_json::json!({"error": "Invalid response"})),
+        Err(e) => serde_json::json!({"error": e.to_string()}),
+    }
+}
+
+#[tauri::command]
+pub async fn restore_backup(id: String, backup_name: String, app: AppHandle) -> Value {
+    use tokio::io::AsyncBufReadExt;
+
+    let mut child = match mcpanel_async_cmd()
+        .args(["api", "backup", "restore", "-id", &id, "-name", &backup_name])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"error": e.to_string()}),
+    };
+
+    let stdout = child.stdout.take().unwrap();
+    let reader = tokio::io::BufReader::new(stdout);
+    let mut lines = reader.lines();
+    let mut final_result = serde_json::json!({"error": "Restore produced no output"});
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Ok(val) = serde_json::from_str::<Value>(&line) {
+            let pct = val["progress"].as_u64().unwrap_or(0);
+            let status = val["status"].as_str().unwrap_or("").to_string();
+            let _ = app.emit("backup-progress", serde_json::json!({"id": &id, "progress": pct, "status": &status}));
+            if val.get("success").is_some() || val.get("error").is_some() {
+                final_result = val;
+            }
+        }
+    }
+    let _ = child.wait().await;
+    final_result
+}
+
+// ─── Schedule system ──────────────────────────────────────────────────────────
+
+fn mcpanel_schedules_path() -> String {
+    format!("{}/schedules.json", mcpanel_home())
+}
+
+pub fn read_all_schedules() -> Vec<Value> {
+    let raw = std::fs::read_to_string(mcpanel_schedules_path()).unwrap_or_else(|_| "[]".into());
+    serde_json::from_str::<Vec<Value>>(&raw).unwrap_or_default()
+}
+
+pub fn write_all_schedules(schedules: &[Value]) -> Result<(), String> {
+    let home = mcpanel_home();
+    std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(schedules).map_err(|e| e.to_string())?;
+    std::fs::write(mcpanel_schedules_path(), json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_schedules(server_id: String) -> Value {
+    let schedules = read_all_schedules();
+    let filtered: Vec<&Value> = schedules.iter()
+        .filter(|s| s["server_id"].as_str() == Some(&server_id))
+        .collect();
+    serde_json::json!({"schedules": filtered})
+}
+
+#[tauri::command]
+pub fn save_schedule(schedule: Value) -> Value {
+    let mut schedules = read_all_schedules();
+    let id = match schedule["id"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return serde_json::json!({"error": "Schedule must have an id"}),
+    };
+    let pos = schedules.iter().position(|s| s["id"].as_str() == Some(&id));
+    if let Some(idx) = pos { schedules[idx] = schedule.clone(); } else { schedules.push(schedule.clone()); }
+    match write_all_schedules(&schedules) {
+        Ok(_) => serde_json::json!({"success": true, "schedule": schedule}),
+        Err(e) => serde_json::json!({"error": e}),
+    }
+}
+
+#[tauri::command]
+pub fn delete_schedule(schedule_id: String) -> Value {
+    let mut schedules = read_all_schedules();
+    let before = schedules.len();
+    schedules.retain(|s| s["id"].as_str() != Some(&schedule_id));
+    if schedules.len() == before { return serde_json::json!({"error": "Schedule not found"}); }
+    match write_all_schedules(&schedules) {
+        Ok(_) => serde_json::json!({"success": true}),
+        Err(e) => serde_json::json!({"error": e}),
+    }
+}
+
+#[tauri::command]
+pub async fn run_schedule_now(server_id: String, action: String, command: Option<String>) -> Value {
+    match execute_scheduled_action(&server_id, &action, command.as_deref()).await {
+        Ok(_) => serde_json::json!({"success": true}),
+        Err(e) => serde_json::json!({"error": e}),
+    }
+}
+
+async fn execute_scheduled_action(server_id: &str, action: &str, command: Option<&str>) -> Result<(), String> {
+    match action {
+        "start" => { mcpanel_async_cmd().args(["api", "start", "server", "-id", server_id]).output().await.map_err(|e| e.to_string())?; }
+        "stop"  => { mcpanel_async_cmd().args(["api", "stop", "server", "-id", server_id]).output().await.map_err(|e| e.to_string())?; }
+        "restart" => { mcpanel_async_cmd().args(["api", "restart", "server", "-id", server_id]).output().await.map_err(|e| e.to_string())?; }
+        "backup" => {
+            mcpanel_async_cmd()
+                .args(["api", "backup", "create", "-id", server_id])
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        "command" => {
+            if let Some(cmd) = command {
+                #[cfg(unix)]
+                {
+                    use std::io::Write;
+                    use std::os::unix::net::UnixStream;
+                    let sock = format!("{}/{}.sock", mcpanel_run_dir(), server_id);
+                    if let Ok(mut stream) = UnixStream::connect(&sock) {
+                        let req = format!("{}\n", serde_json::json!({"op": "cmd", "text": cmd}));
+                        let _ = stream.write_all(req.as_bytes());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub async fn run_scheduler(app: AppHandle) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        let mut schedules = read_all_schedules();
+        let mut changed = false;
+        for schedule in schedules.iter_mut() {
+            if schedule["enabled"].as_bool() != Some(true) { continue; }
+            let next_run = match schedule["next_run"].as_u64() { Some(n) => n, None => continue };
+            if now_ms < next_run { continue; }
+            let server_id = match schedule["server_id"].as_str() { Some(id) => id.to_string(), None => continue };
+            let action = schedule["action"].as_str().unwrap_or("").to_string();
+            let cmd_text = schedule["command"].as_str().map(|s| s.to_string());
+            let _ = execute_scheduled_action(&server_id, &action, cmd_text.as_deref()).await;
+            let _ = app.emit("schedule-fired", serde_json::json!({
+                "schedule_id": schedule["id"].as_str().unwrap_or(""),
+                "server_id": &server_id,
+                "action": &action,
+            }));
+            let repeat = schedule["repeat"].as_bool().unwrap_or(false);
+            if repeat {
+                let every = schedule["repeat_every"].as_u64().unwrap_or(1).max(1);
+                let unit = schedule["repeat_unit"].as_str().unwrap_or("days");
+                let ms: u64 = match unit {
+                    "minutes" => every * 60_000,
+                    "hours"   => every * 3_600_000,
+                    "days"    => every * 86_400_000,
+                    "weeks"   => every * 604_800_000,
+                    _         => every * 86_400_000,
+                };
+                let mut new_next = next_run + ms;
+                while new_next <= now_ms { new_next += ms; }
+                schedule["next_run"] = Value::Number(serde_json::Number::from(new_next));
+                schedule["last_run"] = Value::Number(serde_json::Number::from(now_ms));
+            } else {
+                schedule["enabled"] = Value::Bool(false);
+                schedule["last_run"] = Value::Number(serde_json::Number::from(now_ms));
+            }
+            changed = true;
+        }
+        if changed { let _ = write_all_schedules(&schedules); }
+    }
 }
