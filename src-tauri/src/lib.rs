@@ -63,8 +63,6 @@ pub fn run() {
             commands::get_server_start_time,
             commands::check_first_start_flag,
             commands::quit_app,
-            commands::proxy_info,
-            commands::link_to_proxy,
             commands::get_velocity_secret,
             commands::get_system_stats,
             commands::get_default_theme,

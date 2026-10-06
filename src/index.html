@@ -140,6 +140,9 @@
 
     <div class="sidebar-footer">
       <div class="sidebar-footer-icons">
+        <button class="sidebar-icon-btn" id="sidebar-collapse-btn" title="Collapse sidebar" onclick="toggleSidebarCollapsed()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16"/><path d="M15 10l-2 2l2 2"/></svg>
+        </button>
         <button class="sidebar-icon-btn" title="Open Terminal in MCPanel directory" onclick="openTerminal()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
         </button>
@@ -150,9 +153,13 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         </button>
       </div>
-      <a href="#" onclick="return false" class="footer-link">Copyright DippyCoder 2026</a><br>GPL-3.0
+      <!-- Shown only in the collapsed sidebar, filling the space under the buttons. -->
+      <img class="sidebar-collapsed-logo" data-app-logo src="assets/icons/icon.png" alt="MCPanel" width="28" height="28">
+      <a href="https://dippycoder.com" onclick="window.mcpanel.openExternal('https://dippycoder.com');return false" class="footer-link" title="dippycoder.com">Copyright DippyCoder 2026</a><br>GPL-3.0
     </div>
   </nav>
+  <!-- Drag to resize the sidebar; double-click resets it. -->
+  <div class="sidebar-resizer" id="sidebar-resizer" title="Drag to resize · double-click to reset"></div>
 
   <!-- Main Content -->
   <main class="main">
@@ -290,6 +297,7 @@
         <button type="button" id="servers-sort-dir-btn" class="sort-dir-btn" onclick="onServersSortDirToggle()" title="Reverse sort order">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 4v16M6 14l6 6 6-6"/></svg>
         </button>
+        <button type="button" id="servers-view-btn" class="sort-dir-btn" onclick="onServersViewToggle()" title="Switch to list view"></button>
       </div>
 
       <div class="servers-grid" id="servers-grid">
@@ -326,6 +334,10 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           Console
         </button>
+        <button class="detail-tab" id="dtab-logs" onclick="switchDetailTab('logs')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
+          Logs
+        </button>
         <button class="detail-tab" id="dtab-files" onclick="switchDetailTab('files')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Files
@@ -335,7 +347,7 @@
           <span id="dtab-plugins-label">Plugins</span>
         </button>
         <button class="detail-tab" id="dtab-backups" onclick="switchDetailTab('backups')">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
           Backups
         </button>
         <button class="detail-tab" id="dtab-schedule" onclick="switchDetailTab('schedule')">
@@ -448,6 +460,27 @@
                 </div>
               </div>
               <div id="detail-player-list" style="display:none;font-size:11px;color:var(--text-muted);word-break:break-all"></div>
+            </div>
+          </div>
+
+          <!-- Logs Pane: the server's own logs/ folder, formatted -->
+          <div id="pane-logs" class="hidden">
+            <div class="card console-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                  Logs
+                </div>
+                <div class="logs-toolbar">
+                  <select class="input-sm logs-file-select" id="logs-file-select" onchange="loadLogFile(this.value)"></select>
+                  <button class="btn-ghost-sm btn-icon-sm" id="logs-upload-btn" onclick="uploadCurrentLog()" title="Upload to mclo.gs">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  </button>
+                  <button class="btn-ghost-sm" onclick="openLogsTab()">Refresh</button>
+                </div>
+              </div>
+              <div class="logs-meta hidden" id="logs-meta"></div>
+              <div class="console-output logs-output" id="logs-output"></div>
             </div>
           </div>
 
@@ -605,10 +638,13 @@
                   <div class="danger-zone-title">Danger Zone</div>
                   <div class="danger-zone-row">
                     <div>
-                      <div class="danger-zone-label">Delete Server</div>
-                      <div class="danger-zone-desc">Permanently delete this server and all its files.</div>
+                      <div class="danger-zone-label">Remove or Delete Server</div>
+                      <div class="danger-zone-desc">Remove the server from the Panel or delete it and erase all of its files permanently.</div>
                     </div>
-                    <button class="btn-danger" onclick="confirmDeleteServer()">Delete</button>
+                    <div style="display:flex;gap:8px;flex-shrink:0">
+                      <button class="btn-ghost" onclick="confirmRemoveServer()">Remove</button>
+                      <button class="btn-danger" onclick="confirmDeleteServer()">Delete</button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -624,7 +660,7 @@
             <div class="card">
               <div class="card-header">
                 <div class="card-title">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
                   Backups
                 </div>
                 <button class="btn-primary" id="backup-create-btn" onclick="createBackup()">
@@ -638,7 +674,7 @@
               </div>
               <div class="backup-list" id="backup-list">
                 <div class="backup-empty" id="backup-empty" style="display:none">
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;display:block;margin:0 auto 8px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;display:block;margin:0 auto 8px" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
                   <p style="color:var(--text-muted);font-size:13px;text-align:center">No backups yet. Create one above.</p>
                 </div>
               </div>
@@ -1429,6 +1465,27 @@
 </div>
 
 <!-- Confirm Modal — shared by every destructive action (see confirmDialog()) -->
+<!-- mclo.gs Upload Modal (same layout as the EULA modal) -->
+<div class="modal-overlay hidden" id="modal-mclogs">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <h2 class="modal-title">Upload to mclo.gs</h2>
+    </div>
+    <div class="modal-body">
+      <p style="margin:0 0 12px;color:var(--text-secondary);line-height:1.6;" id="mclogs-notice-text"></p>
+      <p style="margin:0 0 20px;color:var(--text-secondary);line-height:1.6;">
+        By clicking <strong style="color:var(--text-primary)">Confirm</strong> you agree to the<br>
+        <a href="#" onclick="window.mcpanel.openExternal('https://aternos.gmbh/en/mclogs/privacy');return false;" style="color:var(--accent);white-space:nowrap;">mclo.gs Privacy Policy</a>.
+      </p>
+      <label class="checkbox-item mclogs-skip"><input type="checkbox" id="mclogs-skip-notice"> Don't show this again</label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="resolveMclogsNotice(false)">Cancel</button>
+      <button class="btn-primary" onclick="resolveMclogsNotice(true)">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="modal-confirm">
   <div class="modal small">
     <div class="modal-header">
@@ -1559,6 +1616,13 @@
             <input type="text" id="is-folder-path" class="input" placeholder="No folder selected" readonly>
             <button class="btn-sm" onclick="browseImportServerFolder()">Browse</button>
           </div>
+          <div id="is-scan-hint" style="font-size:12px;color:var(--text-secondary);margin-top:6px"></div>
+        </div>
+        <div class="form-group full">
+          <label class="checkbox-item" style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="is-link"> Link this folder instead of copying it
+          </label>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">MCPanel will use the folder instead of cloning it.</div>
         </div>
         <div class="form-group full">
           <label>Server Name</label>
@@ -1742,10 +1806,13 @@
         <div class="danger-zone-title">Danger Zone</div>
         <div class="danger-zone-row">
           <div>
-            <div class="danger-zone-label">Delete Server</div>
-            <div class="danger-zone-desc">Permanently delete this server and all its files. This cannot be undone.</div>
+            <div class="danger-zone-label">Remove or Delete Server</div>
+            <div class="danger-zone-desc">Remove the server from the Panel or delete it and erase all of its files permanently.</div>
           </div>
-          <button class="btn-danger" onclick="closeModal('modal-server-settings');confirmDeleteServer()">Delete</button>
+          <div style="display:flex;gap:8px;flex-shrink:0">
+            <button class="btn-ghost" onclick="closeModal('modal-server-settings');confirmRemoveServer()">Remove</button>
+            <button class="btn-danger" onclick="closeModal('modal-server-settings');confirmDeleteServer()">Delete</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2057,6 +2124,31 @@
 <div class="wnd-resize se" onmousedown="window.mcpanel.startResizeDragging('SouthEast')"></div>
 
 <link rel="stylesheet" href="lib/xterm.css">
+<!-- External Link Modal - stacks on top of any open modal -->
+<div class="modal-overlay modal-overlay-top hidden" id="modal-external-link">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <h2 class="modal-title">Open external link</h2>
+    </div>
+    <div class="modal-body">
+      <p style="margin:0 0 12px;color:var(--text-secondary);line-height:1.6;">
+        You're about to leave MCPanel and open this link in your browser:
+      </p>
+      <div class="external-link-box">
+        <span class="external-link-url" id="external-link-url"></span>
+        <button class="external-link-copy" id="external-link-copy" onclick="copyExternalLinkUrl()" title="Copy link">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+      <label class="checkbox-item external-link-skip"><input type="checkbox" id="external-link-skip"> Don't show this again</label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="resolveExternalLink(false)">Cancel</button>
+      <button class="btn-primary" onclick="resolveExternalLink(true)">Open in browser</button>
+    </div>
+  </div>
+</div>
+
 <script src="lib/xterm.js"></script>
 <script src="lib/xterm-addon-fit.js"></script>
 <script src="lib/ace-ace.js"></script>
@@ -2071,6 +2163,7 @@
 <script src="lib/js-yaml.js"></script>
 <script src="tauri-bridge.js"></script>
 <script src="app.js"></script>
+<script src="addons-ui.js"></script>
 </body>
 </html>
 

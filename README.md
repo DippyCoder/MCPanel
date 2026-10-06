@@ -36,7 +36,9 @@ An open-source Minecraft server panel built with **Tauri** (Rust + WebView) and 
 - **Backups** - One-click `.zip` snapshots per server, restore or delete from the Backups tab
 - **Scheduled tasks** - Restart, start, stop, back up, or run a console command at a set time, once or on repeat
 - **Player management** - Roster of known players with whitelist, op, kick, and ban controls
-- **Velocity proxy linking** - Point a server at a Velocity proxy in one step: registers it in `velocity.toml` at the try-list position you pick, enables modern forwarding, copies the proxy's forwarding secret into `paper-global.yml`, and sets `online-mode=false`
+- **Addons** - browse [MCLib](https://github.com/DippyCoder/MCLib) and other addon libraries from the Addons page and install, update, downgrade or remove addons (after accepting the third-party disclaimer). Addons can add their own pages and server tabs or change existing ones, styled by your theme
+- **Import any server folder** - no MCPanel config needed (software, version, port and RAM are detected); optionally *link* the folder so MCPanel uses it in place instead of copying it
+- **Velocity proxy linking** - Point a server at a Velocity proxy in one step: registers it in `velocity.toml` at the try-list position you pick, enables modern forwarding, copies the proxy's forwarding secret into `paper-global.yml`, and sets `online-mode=false`. Done by MCPanel-CLI as one all-or-nothing step: if any file can't be written, everything is rolled back and the error says which step failed
 - **Import & duplicate** - Adopt an existing server folder, duplicate a configured server, or turn a server into a reusable profile
 - **Quick settings** - Change port, RAM, Java path, and arguments without opening a modal
 - **Storage tracking** - Server folder size with optional per-server storage limits
@@ -296,7 +298,9 @@ Community themes and authoring docs: [`themes` branch](https://github.com/DippyC
 - **Scheduled tasks only fire while MCPanel is open** - they are not system cron jobs.
 - **Backups** are plain `.zip` archives of the server folder, with `logs/` excluded to save space. Stop the server before restoring one.
 
-This README was created for MCPanel v2.2.0 and requires [MCPanel-CLI v1.2.1](https://github.com/DippyCoder/mcpanel-cli/releases) or newer!
+This README was created for MCPanel v2.3.0 and requires [MCPanel-CLI v1.4.0](https://github.com/DippyCoder/mcpanel-cli/releases) or newer!
+
+Error messages shown in the app come straight from MCPanel-CLI (`{"error": "<message>", "code": "<code>"}`) - the app keeps no list of its own, so errors added in newer CLI versions display correctly without an app update.
 
 
 ---
