@@ -27,6 +27,7 @@ let serverPlayerData = {};
 let serversSortBy = localStorage.getItem('mcpanel-servers-sort') || 'name';
 let profilesSortBy = localStorage.getItem('mcpanel-profiles-sort') || 'name';
 let serversSortReversed = localStorage.getItem('mcpanel-servers-sort-dir') === '1';
+let serversView = localStorage.getItem('mcpanel-servers-view') === 'list' ? 'list' : 'blocks';
 let profilesSortReversed = localStorage.getItem('mcpanel-profiles-sort-dir') === '1';
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ async function init() {
   if (profilesSortSel) profilesSortSel.value = profilesSortBy;
   _setSortDirBtnState('servers-sort-dir-btn', serversSortReversed);
   _setSortDirBtnState('profiles-sort-dir-btn', profilesSortReversed);
+  _applyServersView();
   renderServersGrid();
   renderSidebarServers();
   startStatusPolling();
@@ -115,15 +117,27 @@ async function init() {
   // File drag-drop + close notification via the Tauri window handle
   const _win = window.__TAURI__?.window?.getCurrentWindow?.();
   if (_win?.listen) {
+    // Highlight the folder row under the cursor while OS files hover the window.
+    _win.listen('tauri://drag-over', (event) => {
+      const row = _folderRowAt(event.payload);
+      document.querySelectorAll('.file-row.drop-target').forEach(r => { if (r !== row) r.classList.remove('drop-target'); });
+      if (row) row.classList.add('drop-target');
+    });
+    _win.listen('tauri://drag-leave', () => {
+      document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
+    });
     _win.listen('tauri://drag-drop', async (event) => {
       const paths = event.payload?.paths || [];
       if (!paths.length) return;
+      // Released over a folder row: drop INTO that folder, not the open one.
+      const targetRow = _folderRowAt(event.payload);
 
       const profilePane = document.getElementById('pane-profile-files');
       if (currentProfileId && profilePane && !profilePane.classList.contains('hidden')) {
         document.getElementById('profile-file-drop-zone')?.classList.remove('drop-active');
         document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
-        await uploadProfileFilesFromPaths(paths, profileNavPaths.join('/'));
+        const into = targetRow && profilePane.contains(targetRow) ? targetRow.dataset.dropDir : null;
+        await uploadProfileFilesFromPaths(paths, into ?? profileNavPaths.join('/'));
         return;
       }
 
@@ -132,7 +146,8 @@ async function init() {
       if (!pane || pane.classList.contains('hidden')) return;
       document.getElementById('file-drop-zone')?.classList.remove('drop-active');
       document.querySelectorAll('.file-row.drop-target').forEach(r => r.classList.remove('drop-target'));
-      await uploadFilesFromPaths(paths, fileNavPaths.join('/'));
+      const into = targetRow && pane.contains(targetRow) ? targetRow.dataset.dropDir : null;
+      await uploadFilesFromPaths(paths, into ?? fileNavPaths.join('/'));
     });
 
   }
@@ -143,6 +158,17 @@ async function init() {
   if (debugFlag || !config.firstStartDone) {
     openFirstStart();
   }
+}
+
+// The folder row (file browser or profile browser) at a drag/drop position.
+// Tauri reports physical pixels; the WebUI bridge passes CSS pixels and sets
+// `logical: true`.
+function _folderRowAt(payload) {
+  const pos = payload && payload.position;
+  if (!pos) return null;
+  const scale = payload.logical ? 1 : (window.devicePixelRatio || 1);
+  const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
+  return el ? el.closest('.file-row[data-drop-dir]') : null;
 }
 
 // ─── App Settings ─────────────────────────────────────────────────────────────
@@ -223,8 +249,11 @@ function resolveAppIcon() {
 }
 
 function applyAppIcon() {
+  const src = _iconAssetPath(resolveAppIcon());
   const img = document.getElementById('titlebar-logo-img');
-  if (img) img.src = _iconAssetPath(resolveAppIcon());
+  if (img) img.src = src;
+  // Other copies of the logo (e.g. the collapsed sidebar's) follow the same choice.
+  document.querySelectorAll('[data-app-logo]').forEach(el => { el.src = src; });
 }
 
 function renderAppIconPicker() {
@@ -285,10 +314,14 @@ function showPage(page) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const navItem = document.querySelector(`[data-page="${page}"]`);
   if (navItem) navItem.classList.add('active');
+  // Leaving the server page: its sidebar entry must not stay highlighted.
+  document.querySelectorAll('.sidebar-server-item.active').forEach(el => el.classList.remove('active'));
 
   if (page === 'profiles') renderProfilesGrid();
   if (page === 'servers') renderServersGrid();
   if (page === 'settings') renderInstalledThemes();
+  // Addon pages render here; addons can also react to built-in pages.
+  window.MCPanelAddons?._pageShown(page);
 }
 
 function openServerDetail(id) {
@@ -298,10 +331,12 @@ function openServerDetail(id) {
   if (_pluginListEl) _pluginListEl.innerHTML = `<div class="plugin-state-msg">Search for plugins or mods to install them.</div>`;
   const _pluginSearchEl = document.getElementById('server-plugin-search');
   if (_pluginSearchEl) _pluginSearchEl.value = '';
+  currentLogFile = 'latest.log';
   switchDetailTab('console');
   const srv = config.servers.find(s => s.id === id);
   if (!srv) return;
   window.mcpanel.logEvent(`Opened server panel: ${srv.name} -id ${id}`);
+  window.MCPanelAddons?._serverOpened(id);
 
   document.querySelectorAll('.sidebar-server-item').forEach(el => el.classList.remove('active'));
   const sidebarItem = document.querySelector(`[data-server-id="${id}"]`);
@@ -394,6 +429,26 @@ function onProfilesSortChange() {
   profilesSortBy = document.getElementById('profiles-sort').value;
   localStorage.setItem('mcpanel-profiles-sort', profilesSortBy);
   renderProfilesGrid();
+}
+
+// Servers page layout: 'blocks' (cards) or 'list' (one compact row each).
+// The button shows the icon of the view it switches TO.
+const _VIEW_ICON_LIST = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>';
+const _VIEW_ICON_BLOCKS = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>';
+
+function _applyServersView() {
+  document.getElementById('servers-grid')?.classList.toggle('list-view', serversView === 'list');
+  const btn = document.getElementById('servers-view-btn');
+  if (btn) {
+    btn.innerHTML = serversView === 'list' ? _VIEW_ICON_BLOCKS : _VIEW_ICON_LIST;
+    btn.title = serversView === 'list' ? 'Switch to block view' : 'Switch to list view';
+  }
+}
+
+function onServersViewToggle() {
+  serversView = serversView === 'list' ? 'blocks' : 'list';
+  localStorage.setItem('mcpanel-servers-view', serversView);
+  _applyServersView();
 }
 
 function _setSortDirBtnState(btnId, reversed) {
@@ -593,6 +648,23 @@ function updateServerCardStatus(id, online, players) {
 }
 
 // ─── Sidebar Servers ──────────────────────────────────────────────────────────
+// First visible character of a server name, exactly as written — lowercase
+// stays lowercase, and accented letters, symbols and multi-part emoji stay
+// whole (one grapheme, not one UTF-16 unit). Shown in the collapsed sidebar.
+function _serverInitial(name) {
+  const s = String(name || '').trim();
+  if (!s) return '?';
+  try {
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+      const first = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)[Symbol.iterator]().next();
+      if (!first.done) return first.value.segment;
+    }
+  } catch { /* fall back below */ }
+  return Array.from(s)[0];
+}
+
+const SIDEBAR_RAIL_MAX = 8;   // servers shown in the collapsed sidebar (first N, expanded order)
+
 function renderSidebarServers() {
   const container = document.getElementById('sidebar-servers');
   if (config.servers.length === 0) {
@@ -609,12 +681,17 @@ function renderSidebarServers() {
     groups.get(key).push(srv);
   });
 
+  let shown = 0;
   const appendServer = (srv) => {
     const btn = document.createElement('button');
     btn.className = 'sidebar-server-item';
+    if (shown++ >= SIDEBAR_RAIL_MAX) btn.classList.add('rail-overflow');
+    if (_sidebarOnline[srv.id]) btn.classList.add('srv-online');
     btn.dataset.serverId = srv.id;
+    btn.title = srv.name;
     btn.innerHTML = `
-      <div class="srv-dot offline" id="sdot-${srv.id}"></div>
+      <span class="srv-initial" aria-hidden="true">${escapeHtml(_serverInitial(srv.name))}</span>
+      <div class="srv-dot ${_sidebarOnline[srv.id] ? 'online' : 'offline'}" id="sdot-${srv.id}"></div>
       <span class="srv-name">${escapeHtml(srv.name)}</span>
       <button class="srv-quick-btn" title="Quick start/stop" id="sqbtn-${srv.id}" onclick="sidebarQuickToggle('${srv.id}', event)">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -637,13 +714,21 @@ function renderSidebarServers() {
   groups.forEach((servers, groupName) => {
     const header = document.createElement('div');
     header.className = 'sidebar-category-header';
+    // A divider for a group none of whose servers fit in the rail is hidden too.
+    if (shown >= SIDEBAR_RAIL_MAX) header.classList.add('rail-overflow');
     header.textContent = groupName;
     container.appendChild(header);
     servers.forEach(appendServer);
   });
 }
 
+// Last known online state per server, so a re-rendered sidebar keeps it
+// instead of showing everything offline until the next status poll.
+const _sidebarOnline = {};
+
 function updateSidebarDot(id, online) {
+  _sidebarOnline[id] = !!online;
+  document.querySelector(`.sidebar-server-item[data-server-id="${id}"]`)?.classList.toggle('srv-online', !!online);
   const dot = document.getElementById(`sdot-${id}`);
   if (dot) {
     dot.className = `srv-dot ${online ? 'online' : 'offline'}`;
@@ -833,16 +918,191 @@ function updateDetailStarting() {
 // ─── Detail Tabs ─────────────────────────────────────────────────────────────
 
 function switchDetailTab(name) {
-  ['console', 'files', 'plugins', 'settings', 'backups', 'schedule', 'players'].forEach(t => {
-    document.getElementById(`dtab-${t}`).classList.toggle('active', t === name);
-    document.getElementById(`pane-${t}`).classList.toggle('hidden', t !== name);
+  // Built-in tabs plus any an addon registered (MCPanelAddons.registerServerTab).
+  const addonTabs = window.MCPanelAddons ? window.MCPanelAddons._serverTabNames() : [];
+  ['console', 'logs', 'files', 'plugins', 'settings', 'backups', 'schedule', 'players', ...addonTabs].forEach(t => {
+    document.getElementById(`dtab-${t}`)?.classList.toggle('active', t === name);
+    document.getElementById(`pane-${t}`)?.classList.toggle('hidden', t !== name);
   });
+  window.MCPanelAddons?._serverTabShown(name);
+  if (name === 'logs') openLogsTab();
   if (name === 'files') openFilesTab();
   if (name === 'settings') openSettingsTab();
   if (name === 'plugins') openServerPluginsTab();
   if (name === 'backups') openBackupsTab();
   if (name === 'schedule') openScheduleTab();
   if (name === 'players') openPlayersTab();
+}
+
+// ─── Logs Tab ─────────────────────────────────────────────────────────────────
+// The server's own logs/ folder (latest.log + gzipped archives), read through
+// the CLI. Unlike the console this is a static view: switching to the tab or
+// pressing Refresh re-reads it.
+
+let currentLogFile = 'latest.log';
+let _logsLoadSeq = 0;
+
+// "[12:34:56] [Server thread/INFO]: msg" (vanilla/Paper) and
+// "[12:34:56 INFO]: msg" (Spigot/Velocity style).
+const LOG_LINE_RE = /^\[(\d{2}:\d{2}:\d{2})(?:\.\d+)?\]\s*\[([^\]]*?)\/([A-Z]+)\]:?\s?(.*)$/;
+const LOG_LINE_SHORT_RE = /^\[(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+([A-Z]+)\]:?\s?(.*)$/;
+
+function _logLevelClass(level) {
+  if (/^(ERROR|SEVERE|FATAL)$/.test(level)) return 'err';
+  if (/^WARN(ING)?$/.test(level)) return 'warn';
+  if (/^(DEBUG|TRACE)$/.test(level)) return 'debug';
+  return 'info';
+}
+
+function _formatLogFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function openLogsTab() {
+  if (!currentServerId) return;
+  const id = currentServerId;
+  const res = await window.mcpanel.listLogFiles(id);
+  if (id !== currentServerId) return;
+  const select = document.getElementById('logs-file-select');
+  const files = (res && res.files) || [];
+  if (res && res.error) {
+    select.innerHTML = '';
+    _renderLogMessage(res.error, true);
+    return;
+  }
+  if (!files.length) {
+    select.innerHTML = '';
+    currentLogFile = null;
+    document.getElementById('logs-meta').classList.add('hidden');
+    _renderLogMessage('No log files yet. The server writes them to its logs/ folder once it has run.');
+    _updateLogUploadBtn();
+    return;
+  }
+  if (!files.some(f => f.name === currentLogFile)) currentLogFile = files[0].name;
+  select.innerHTML = files.map(f =>
+    `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)} (${_formatLogFileSize(f.size || 0)})</option>`
+  ).join('');
+  select.value = currentLogFile;
+  await loadLogFile(currentLogFile);
+}
+
+async function loadLogFile(name) {
+  if (!currentServerId || !name) return;
+  currentLogFile = name;
+  _updateLogUploadBtn();
+  const seq = ++_logsLoadSeq;
+  _renderLogMessage('Loading…');
+  const res = await window.mcpanel.readLogFile(currentServerId, name);
+  if (seq !== _logsLoadSeq) return;   // a newer selection won
+  const meta = document.getElementById('logs-meta');
+  if (!res || res.error) {
+    meta.classList.add('hidden');
+    _renderLogMessage(res?.error || 'Could not read the log file.', true);
+    return;
+  }
+  if (res.truncated) {
+    meta.textContent = `Showing the last ${res.lines.length.toLocaleString()} of ${res.totalLines.toLocaleString()} lines.`;
+    meta.classList.remove('hidden');
+  } else {
+    meta.classList.add('hidden');
+  }
+  _renderLogLines(res.lines || []);
+}
+
+function _renderLogMessage(text, isError = false) {
+  const el = document.getElementById('logs-output');
+  el.innerHTML = `<div class="logs-empty${isError ? ' err' : ''}">${escapeHtml(text)}</div>`;
+}
+
+function _renderLogLines(lines) {
+  const el = document.getElementById('logs-output');
+  if (!lines.length) { _renderLogMessage('This log file is empty.'); return; }
+  // Lines without their own header (stack traces, multi-line messages) take
+  // the level of the entry they belong to.
+  let level = 'info';
+  const html = lines.map(raw => {
+    let m = raw.match(LOG_LINE_RE), time, thread = '', lvl, msg;
+    if (m) { [, time, thread, lvl, msg] = m; }
+    else if ((m = raw.match(LOG_LINE_SHORT_RE))) { [, time, lvl, msg] = m; }
+    if (!m) {
+      return `<div class="log-line log-cont ${level}"><span class="log-text">${ansiToHtml(raw) || '&nbsp;'}</span></div>`;
+    }
+    level = _logLevelClass(lvl);
+    return `<div class="log-line ${level}">`
+      + `<span class="log-time">${time}</span>`
+      + `<span class="log-level">${escapeHtml(lvl)}</span>`
+      + (thread ? `<span class="log-thread">${escapeHtml(thread)}</span>` : '')
+      + `<span class="log-text">${ansiToHtml(msg)}</span></div>`;
+  }).join('');
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+}
+
+function _updateLogUploadBtn(uploading = false) {
+  const btn = document.getElementById('logs-upload-btn');
+  btn.disabled = uploading || !currentLogFile;
+  btn.classList.toggle('loading', uploading);
+}
+
+// Shown before every upload until the viewer ticks "Don't show this again"
+// (remembered per browser / app install).
+const MCLOGS_SKIP_KEY = 'mcpanel-mclogs-skip-notice';
+let _mclogsResolve = null;
+
+function _mclogsNoticeSkipped() {
+  try { return localStorage.getItem(MCLOGS_SKIP_KEY) === '1'; } catch { return false; }
+}
+
+function confirmMclogsUpload(name) {
+  if (_mclogsNoticeSkipped()) return Promise.resolve(true);
+  if (_mclogsResolve) resolveMclogsNotice(false);
+  document.getElementById('mclogs-notice-text').textContent =
+    `${name} will be uploaded to the servers of mclo.gs, where anyone with the link can read it.`;
+  document.getElementById('mclogs-skip-notice').checked = false;
+  openModal('modal-mclogs');
+  return new Promise(resolve => { _mclogsResolve = resolve; });
+}
+
+function resolveMclogsNotice(ok) {
+  closeModal('modal-mclogs');
+  if (ok && document.getElementById('mclogs-skip-notice').checked) {
+    try { localStorage.setItem(MCLOGS_SKIP_KEY, '1'); } catch {}
+  }
+  const resolve = _mclogsResolve;
+  _mclogsResolve = null;
+  if (resolve) resolve(ok);
+}
+
+document.addEventListener('keydown', e => {
+  if (_mclogsResolve && e.key === 'Escape') resolveMclogsNotice(false);
+});
+
+async function uploadCurrentLog() {
+  if (!currentServerId || !currentLogFile) return;
+  const id = currentServerId, name = currentLogFile;
+  if (!(await confirmMclogsUpload(name))) return;
+  if (id !== currentServerId || name !== currentLogFile) return;
+  _updateLogUploadBtn(true);
+  const res = await window.mcpanel.uploadLog(id, name);
+  _updateLogUploadBtn(false);
+  if (id !== currentServerId || name !== currentLogFile) return;
+  if (!res || res.error) { toast(res?.error || 'Upload failed', 'error'); return; }
+  window.mcpanel.logEvent(`Uploaded ${name} to mclo.gs: ${res.url} -id ${id}`);
+  const note = res.truncated
+    ? ` (newest ${res.lines.toLocaleString()} of ${res.totalLines.toLocaleString()} lines)` : '';
+  toast(`Uploaded ${name} to mclo.gs${note}`, 'success', {
+    buttons: [
+      { label: 'Copy link', onClick: async (btn) => {
+          try { await navigator.clipboard.writeText(res.url); btn.label.textContent = 'Copied'; }
+          catch { btn.label.textContent = 'Copy failed'; }
+          return false;   // stay open so "Open in browser" is still reachable
+      } },
+      { label: 'Open in browser', onClick: () => _openExternalDirect(res.url),
+        icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6h-6a2 2 0 0 0 -2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-6"/><path d="M11 13l9 -9"/><path d="M15 4h5v5"/></svg>' },
+    ],
+  });
 }
 
 // ─── File Browser ─────────────────────────────────────────────────────────────
@@ -980,6 +1240,7 @@ function renderFileBrowser() {
         fileNavPaths.push(node.name);
         renderFileBrowser();
       };
+      row.dataset.dropDir = [...fileNavPaths, node.name].join('/');
       row.ondragover = e => { e.preventDefault(); e.stopPropagation(); row.classList.add('drop-target'); };
       row.ondragleave = () => row.classList.remove('drop-target');
       row.ondrop = e => {
@@ -2968,24 +3229,39 @@ function openRenameModal() {
 async function confirmDeleteServer() {
   if (!currentServerId) return;
   const srv = config.servers.find(s => s.id === currentServerId);
+  // A linked server's files are its original folder, wherever it lives.
+  const where = srv?.linked ? `\n\nThis server is linked, so its original folder will be deleted:\n${srv.dir}` : '';
   const ok = await confirmDialog({
     title: 'Delete Server',
-    message: `Permanently delete "${srv?.name || currentServerId}" and all its files?\n\nThis action cannot be undone.`,
+    message: `Permanently delete "${srv?.name || currentServerId}" and all its files?${where}\n\nThis action cannot be undone.`,
     confirmLabel: 'Delete Server',
   });
   if (ok) await executeDeleteServer();
 }
 
-async function executeDeleteServer() {
+// "Remove" only takes the server off MCPanel's list; its folder is kept.
+async function confirmRemoveServer() {
   if (!currentServerId) return;
-  const r = await window.mcpanel.deleteServer(currentServerId);
+  const srv = config.servers.find(s => s.id === currentServerId);
+  const ok = await confirmDialog({
+    title: 'Remove Server',
+    message: `Remove "${srv?.name || currentServerId}" from MCPanel?\n\nIts files are kept${srv?.dir ? ` at:\n${srv.dir}` : ''}\n\nYou can import it again later.`,
+    confirmLabel: 'Remove',
+  });
+  if (ok) await executeDeleteServer({ keepFiles: true });
+}
+
+async function executeDeleteServer({ keepFiles = false } = {}) {
+  if (!currentServerId) return;
+  const r = await window.mcpanel.deleteServer(currentServerId, { keepFiles });
   if (r.error) { toast(r.error, 'error'); return; }
   config.servers = config.servers.filter(s => s.id !== currentServerId);
   currentServerId = null;
   renderServersGrid();
   renderSidebarServers();
   showPage('servers');
-  toast('Server deleted', 'info');
+  toast(keepFiles ? 'Server removed - its files were kept' : 'Server deleted', 'info');
+  if (r.warning) toast(r.warning, 'error');
 }
 
 // ─── Create Server Modal ──────────────────────────────────────────────────────
@@ -3446,6 +3722,7 @@ function renderProfileFileBrowser() {
         profileNavPaths.push(node.name);
         renderProfileFileBrowser();
       };
+      row.dataset.dropDir = [...profileNavPaths, node.name].join('/');
       row.ondragover = e => { e.preventDefault(); e.stopPropagation(); row.classList.add('drop-target'); };
       row.ondragleave = () => row.classList.remove('drop-target');
       row.ondrop = e => {
@@ -3845,6 +4122,10 @@ function openImportServerModal() {
   setRamDropdown('is', '2G');
   document.getElementById('is-java').value = 'java';
   document.getElementById('is-java-args').value = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200';
+  const linkEl = document.getElementById('is-link');
+  if (linkEl) linkEl.checked = false;
+  const hintEl = document.getElementById('is-scan-hint');
+  if (hintEl) hintEl.textContent = '';
   openModal('modal-import-server');
 }
 
@@ -3855,7 +4136,17 @@ async function browseImportServerFolder() {
   const scan = await window.mcpanel.scanServerFolder(folderPath);
   if (scan.port) document.getElementById('is-port').value = scan.port;
   if (scan.software) document.getElementById('is-software').value = scan.software;
-  if (scan.version) document.getElementById('is-version').value = scan.version;
+  // Always overwrite: a version left over from a previously picked folder
+  // (e.g. a Minecraft version on a Velocity proxy) would be wrong.
+  document.getElementById('is-version').value = scan.version || '';
+  if (scan.ram) setRamDropdown('is', scan.ram);
+  // Any server folder works - it doesn't need to have been made by MCPanel.
+  const hintEl = document.getElementById('is-scan-hint');
+  if (hintEl) {
+    hintEl.textContent = scan.isServer === false
+      ? 'This folder doesn\u2019t look like a Minecraft server (no server jar found).'
+      : (scan.software ? `Detected ${capitalise(scan.software)}${scan.version ? ' ' + scan.version : ''}.` : '');
+  }
   if (!document.getElementById('is-name').value) {
     document.getElementById('is-name').value = folderPath.split(/[/\\]/).pop();
   }
@@ -3881,6 +4172,7 @@ async function importServer() {
   if (deviceErr) { toast(deviceErr, 'error'); return; }
   const javaPath = document.getElementById('is-java').value.trim() || 'java';
   const javaArgs = document.getElementById('is-java-args').value.trim();
+  const link = !!document.getElementById('is-link')?.checked;
 
   const btn = document.getElementById('is-submit');
   btn.disabled = true; btn.textContent = 'Importing...';
@@ -3889,7 +4181,7 @@ async function importServer() {
   document.getElementById('modal-download-title').textContent = 'Importing Server';
   openModal('modal-download');
 
-  const r = await window.mcpanel.importServer({ folderPath, name, software, version, port, ram, javaPath, javaArgs });
+  const r = await window.mcpanel.importServer({ folderPath, name, software, version, port, ram, javaPath, javaArgs, link });
 
   closeModal('modal-download');
   document.getElementById('modal-download-title').textContent = 'Creating Server';
@@ -3899,7 +4191,7 @@ async function importServer() {
   config.servers.push(r.server);
   renderServersGrid();
   renderSidebarServers();
-  toast(`Server "${name}" imported!`, 'success');
+  toast(link ? `Server "${name}" linked - MCPanel uses the original folder` : `Server "${name}" imported!`, 'success');
 }
 
 // ─── Update checker ───────────────────────────────────────────────────────────
@@ -4228,15 +4520,77 @@ function closeModal(id) {
 }
 
 // Close modal on overlay click
+// Only when the press also started on the overlay: drag-selecting text inside
+// a modal and releasing outside it fires a click on the overlay too.
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  let pressedOnOverlay = false;
+  overlay.addEventListener('mousedown', e => { pressedOnOverlay = e.target === overlay; });
   overlay.addEventListener('click', e => {
-    if (e.target === overlay) {
+    if (e.target === overlay && pressedOnOverlay) {
       const id = overlay.id;
       if (id === 'modal-confirm') { resolveConfirmDialog(false); return; }
+      if (id === 'modal-external-link') { resolveExternalLink(false); return; }
+      if (id === 'modal-mclogs') { resolveMclogsNotice(false); return; }
       if (id !== 'modal-download' && id !== 'modal-cli-missing' && id !== 'modal-buildtools-missing') closeModal(id);
     }
   });
 });
+
+// ─── External link confirmation ──────────────────────────────────────────────
+// Every link in the app (addons included) goes through
+// window.mcpanel.openExternal, so wrapping it here puts a "you're leaving
+// MCPanel" modal in front of all of them. The modal stacks over any modal
+// that's already open instead of replacing it. _openExternalDirect skips the
+// prompt - only for buttons that already say "Open in browser".
+const _openExternalDirect = window.mcpanel.openExternal;
+let _externalLinkPending = null;   // { url, resolve }
+const EXTERNAL_LINK_SKIP_KEY = 'mcpanel-external-link-skip-notice';
+
+function _externalLinkNoticeSkipped() {
+  try { return localStorage.getItem(EXTERNAL_LINK_SKIP_KEY) === '1'; } catch { return false; }
+}
+
+function confirmExternalLink(url) {
+  if (_externalLinkNoticeSkipped()) {
+    _openExternalDirect(url);
+    return Promise.resolve(true);
+  }
+  if (_externalLinkPending) resolveExternalLink(false);
+  document.getElementById('external-link-url').textContent = String(url);
+  document.getElementById('external-link-skip').checked = false;
+  openModal('modal-external-link');
+  return new Promise(resolve => { _externalLinkPending = { url, resolve }; });
+}
+
+function resolveExternalLink(ok) {
+  closeModal('modal-external-link');
+  const pending = _externalLinkPending;
+  _externalLinkPending = null;
+  if (!pending) return;
+  if (ok) {
+    if (document.getElementById('external-link-skip').checked) {
+      try { localStorage.setItem(EXTERNAL_LINK_SKIP_KEY, '1'); } catch {}
+    }
+    _openExternalDirect(pending.url);
+  }
+  pending.resolve(ok);
+}
+
+async function copyExternalLinkUrl() {
+  const url = document.getElementById('external-link-url').textContent;
+  try { await navigator.clipboard.writeText(url); toast('Link copied', 'success'); }
+  catch { toast('Could not copy the link', 'error'); }
+}
+
+window.mcpanel.openExternal = (url) => confirmExternalLink(url);
+
+// Escape closes only this top-most modal, not the one underneath it.
+window.addEventListener('keydown', e => {
+  if (_externalLinkPending && e.key === 'Escape') {
+    e.stopImmediatePropagation();
+    resolveExternalLink(false);
+  }
+}, true);
 
 // ─── Confirm dialog ───────────────────────────────────────────────────────────
 // Every destructive action goes through this instead of window.confirm(), so
@@ -4268,17 +4622,59 @@ document.addEventListener('keydown', e => {
 });
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
-function toast(msg, type = 'info') {
+// toast(msg, type, { buttons, duration })
+//   buttons: [{ label, icon, onClick }] - only rendered when given. `icon` is
+//   trusted SVG markup shown after the label. A click runs onClick(btn) and
+//   closes the toast, unless onClick returns false (e.g. to relabel the button
+//   to "Copied" and stay open - set btn.label.textContent for that).
+//   duration: ms before it fades out; toasts with buttons default to 10s and
+//   don't fade while hovered, so there's time to reach a button.
+function toast(msg, type = 'info', opts = {}) {
   const container = document.getElementById('toast-container');
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.textContent = msg;
-  container.appendChild(el);
-  setTimeout(() => {
+  const buttons = Array.isArray(opts.buttons) ? opts.buttons : [];
+  const duration = opts.duration ?? (buttons.length ? 10000 : 3500);
+
+  let closed = false, timer = null;
+  const close = () => {
+    if (closed) return;
+    closed = true; clearTimeout(timer);
     el.style.transition = 'opacity .3s, transform .3s';
     el.style.opacity = '0'; el.style.transform = 'translateX(20px)';
     setTimeout(() => el.remove(), 300);
-  }, 3500);
+  };
+  const arm = () => { clearTimeout(timer); timer = setTimeout(close, duration); };
+
+  if (buttons.length) {
+    const text = document.createElement('div');
+    text.className = 'toast-msg';
+    text.textContent = msg;
+    const row = document.createElement('div');
+    row.className = 'toast-actions';
+    buttons.forEach(b => {
+      const btn = document.createElement('button');
+      btn.className = 'toast-btn';
+      btn.label = document.createElement('span');
+      btn.label.textContent = b.label;
+      btn.appendChild(btn.label);
+      if (b.icon) btn.insertAdjacentHTML('beforeend', b.icon);
+      btn.onclick = async () => {
+        let keepOpen = false;
+        try { keepOpen = (await b.onClick?.(btn)) === false; }
+        catch (e) { console.error('toast button failed', e); }
+        if (!keepOpen) close();
+      };
+      row.appendChild(btn);
+    });
+    el.append(text, row);
+    el.addEventListener('mouseenter', () => clearTimeout(timer));
+    el.addEventListener('mouseleave', () => { if (!closed) arm(); });
+  } else {
+    el.textContent = msg;
+  }
+  container.appendChild(el);
+  arm();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -5185,3 +5581,79 @@ async function runScheduleNow(scheduleId, serverId, action, command) {
   if (res.error) { toast('Failed to run task: ' + res.error, 'error'); return; }
   toast('Task executed');
 }
+
+
+// ─── Sidebar: resize + collapse ──────────────────────────────────────────────
+// Width and collapsed state are per-device conveniences, remembered like the
+// servers sort/view settings.
+const SIDEBAR_DEFAULT_WIDTH = 220;
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 420;
+const SIDEBAR_COLLAPSE_BELOW = 120;   // dragging narrower than this collapses it
+const _SIDEBAR_ICON_COLLAPSE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16"/><path d="M15 10l-2 2l2 2"/></svg>';
+const _SIDEBAR_ICON_EXPAND = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16"/><path d="M14 10l2 2l-2 2"/></svg>';
+
+function _setSidebarWidth(px, persist = true) {
+  const w = Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, px)));
+  document.querySelector('.app')?.style.setProperty('--sidebar-width', `${w}px`);
+  if (persist) localStorage.setItem('mcpanel-sidebar-width', String(w));
+  return w;
+}
+
+function setSidebarCollapsed(collapsed) {
+  const app = document.querySelector('.app');
+  if (!app) return;
+  app.classList.toggle('sidebar-collapsed', collapsed);
+  localStorage.setItem('mcpanel-sidebar-collapsed', collapsed ? '1' : '0');
+  const btn = document.getElementById('sidebar-collapse-btn');
+  if (btn) {
+    btn.innerHTML = collapsed ? _SIDEBAR_ICON_EXPAND : _SIDEBAR_ICON_COLLAPSE;
+    btn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  }
+  // Icon-only nav items need a tooltip (addon pages may have been added since).
+  if (collapsed) {
+    document.querySelectorAll('.sidebar .nav-item').forEach(n => {
+      if (!n.title) n.title = n.querySelector('span')?.textContent.trim() || '';
+    });
+  }
+}
+
+function toggleSidebarCollapsed() {
+  setSidebarCollapsed(!document.querySelector('.app')?.classList.contains('sidebar-collapsed'));
+}
+
+(function initSidebarLayout() {
+  const saved = parseInt(localStorage.getItem('mcpanel-sidebar-width'), 10);
+  _setSidebarWidth(Number.isFinite(saved) ? saved : SIDEBAR_DEFAULT_WIDTH, false);
+  setSidebarCollapsed(localStorage.getItem('mcpanel-sidebar-collapsed') === '1');
+
+  const handle = document.getElementById('sidebar-resizer');
+  const sidebar = document.querySelector('.sidebar');
+  if (!handle || !sidebar) return;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const left = sidebar.getBoundingClientRect().left;
+    document.body.classList.add('sidebar-resizing');
+    const move = (ev) => {
+      const w = ev.clientX - left;
+      if (w < SIDEBAR_COLLAPSE_BELOW) { setSidebarCollapsed(true); return; }
+      if (document.querySelector('.app').classList.contains('sidebar-collapsed')) setSidebarCollapsed(false);
+      _setSidebarWidth(w);
+    };
+    const up = () => {
+      document.body.classList.remove('sidebar-resizing');
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+  });
+  handle.addEventListener('dblclick', () => {
+    setSidebarCollapsed(false);
+    _setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+  });
+})();

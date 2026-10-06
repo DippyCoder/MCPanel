@@ -24,12 +24,39 @@
   window._cliReady = new Promise(resolve => { _cliReadyResolve = resolve; });
 
   // ─── CLI helper ─────────────────────────────────────────────────────────────
+  // Error contract: the CLI reports every failure as {"error": "<message>",
+  // "code": "<code>"}. Those documents come back from cli() as ordinary values
+  // (callers check `.error` and show it verbatim - the CLI owns the wording,
+  // so an error added in a newer CLI still reads right in this build). Only
+  // failures the CLI couldn't report itself are thrown, as Errors with a
+  // `.code` of their own.
+  function _coded(message, code) {
+    return Object.assign(new Error(message), { code: code || 'error' });
+  }
+
   async function cli(args) {
     // Block until check is done AND it passed. This prevents run_cli from
     // spawning subprocesses before we know mcpanel resolves to the CLI tool.
-    if (window._cliOk !== true) throw new Error('MCPanel-CLI is not available');
-    const raw = await _invoke('run_cli', { args });
-    return JSON.parse(raw);
+    if (window._cliOk !== true) throw _coded('MCPanel-CLI is not available', 'cli_unavailable');
+    let raw;
+    try {
+      raw = await _invoke('run_cli', { args });
+    } catch (e) {
+      // run_cli rejects with the CLI's stderr when it printed nothing at all.
+      throw _coded(String(e || 'MCPanel-CLI failed'), 'cli_failed');
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw _coded(`MCPanel-CLI returned unreadable output: ${String(raw).slice(0, 300)}`, 'cli_bad_output');
+    }
+  }
+
+  // cli(), but a failure to run the CLI at all also becomes an {error, code}
+  // value - for calls whose callers only ever check `.error`.
+  async function cliResult(args) {
+    try { return await cli(args); }
+    catch (e) { return { error: e.message, code: e.code || 'error' }; }
   }
 
   // mcpanel.json is the server's own manifest (id, dir, etc.) — not something
@@ -86,6 +113,12 @@
 
   // ─── Public API ──────────────────────────────────────────────────────────────
   window.mcpanel = {
+    // Which frontend this is - addon UI scripts (addons-ui.js) read it.
+    product: 'mcpanel',
+    // Raw `mcpanel api <args…>` for addon UI scripts and the addon browser.
+    // CLI failures resolve as {error, code} documents; failing to reach the
+    // CLI at all rejects with an Error carrying `.code`.
+    cli: (args) => cli(Array.isArray(args) ? args.map(String) : []),
 
     // Config
     getConfig: async () => {
@@ -122,8 +155,12 @@
       return JSON.parse(raw);
     },
 
-    deleteServer: async (id) => {
-      return cli(['delete', 'server', '-id', id]);
+    // keepFiles: only remove it from MCPanel's list ("Remove"); otherwise the
+    // server's files are deleted too - a linked server's original folder included.
+    deleteServer: async (id, { keepFiles = false } = {}) => {
+      const args = ['delete', 'server', '-id', id];
+      if (keepFiles) args.push('--keep-files');
+      return cli(args);
     },
 
     updateServer: async (id, updates) => {
@@ -151,6 +188,13 @@
       const result = await cli(['fetch', 'log', '-id', id]);
       return Array.isArray(result) ? result : [];
     },
+
+    // The server's own logs/ folder (Logs tab). All three resolve to the CLI's
+    // document - an {error, code} one included - and never throw.
+    listLogFiles: (id) => cliResult(['fetch', 'logfiles', '-id', id]),
+    readLogFile: (id, file) => cliResult(['fetch', 'logfile', '-id', id, '-file', file]),
+    // Uploads (at most the newest 10k lines / 25 MB of) a log file to mclo.gs.
+    uploadLog: (id, file) => cliResult(['upload-log', '-id', id, '-file', file]),
 
     // Reads log entries written after `offset` bytes. Returns { lines, offset }.
     // Used by the 15 ms console poll; bypasses the CLI for low-latency file reads.
@@ -241,6 +285,8 @@
       if (data.version) args.push('-v', data.version);
       if (data.javaPath) args.push('-java', data.javaPath);
       if (data.javaArgs) args.push('-jargs', data.javaArgs);
+      // Use the folder in place instead of copying it into MCPanel's dir.
+      if (data.link) args.push('--link');
       const raw = await _invoke('import_server_cmd', { args });
       return JSON.parse(raw);
     },
@@ -325,15 +371,19 @@
     },
 
     // Velocity proxy link (handled natively in Rust — bypasses CLI)
+    // Both go through the CLI, which links transactionally (all files or
+    // none) and returns {error, code, failedStep, rolledBack} on failure.
     proxyInfo: (velocityId) =>
-      _invoke('proxy_info', { velocityId }),
+      cliResult(['proxy', 'info', '--velocity-id', String(velocityId)]),
 
-    linkToProxy: (paperId, velocityId, serverName, priority, customIp) =>
-      _invoke('link_to_proxy', {
-        paperId, velocityId, serverName,
-        priority,
-        customIp: customIp || null,
-      }),
+    linkToProxy: (paperId, velocityId, serverName, priority, customIp) => {
+      const args = ['proxy', 'link', '-id', String(paperId), '--velocity-id', String(velocityId)];
+      if (serverName) args.push('--server-name', String(serverName));
+      if (priority !== undefined && priority !== null) args.push('--priority', String(priority));
+      // A bare host is fine: the CLI appends the backend's port itself.
+      if (customIp) args.push('--custom-ip', String(customIp));
+      return cliResult(args);
+    },
 
     // Velocity
     getVelocitySecret: (id) => _invoke('get_velocity_secret', { id }),

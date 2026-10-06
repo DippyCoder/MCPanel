@@ -2110,356 +2110,12 @@ pub fn list_system_fonts() -> Vec<String> {
 }
 
 // ─── Velocity proxy link ──────────────────────────────────────────────────────
-
-fn find_velocity_try_array(lines: &[&str]) -> Option<(usize, usize, Vec<String>)> {
-    let mut in_servers = false;
-    let mut try_start: Option<usize> = None;
-    let mut in_array = false;
-    let mut entries: Vec<String> = Vec::new();
-
-    for (i, line) in lines.iter().enumerate() {
-        let t = line.trim();
-        if t == "[servers]" {
-            in_servers = true;
-            continue;
-        }
-        if in_servers && t.starts_with('[') && t != "[servers]" {
-            in_servers = false;
-        }
-        if !in_servers { continue; }
-
-        if try_start.is_none() && t.starts_with("try") {
-            if let Some(eq) = t.find('=') {
-                let after = t[eq + 1..].trim();
-                if after.starts_with('[') {
-                    try_start = Some(i);
-                    if after.ends_with(']') {
-                        let inner = &after[1..after.len() - 1];
-                        for part in inner.split(',') {
-                            let s = part.trim().trim_matches('"').trim();
-                            if !s.is_empty() { entries.push(s.to_string()); }
-                        }
-                        return Some((i, i, entries));
-                    }
-                    in_array = true;
-                    continue;
-                }
-            }
-        }
-
-        if in_array {
-            if t == "]" || t == "]," {
-                return Some((try_start.unwrap(), i, entries));
-            }
-            let entry = t.trim_matches(',').trim().trim_matches('"').trim().to_string();
-            if !entry.is_empty() { entries.push(entry); }
-        }
-    }
-    None
-}
-
-fn parse_velocity_try_list(contents: &str) -> Vec<String> {
-    let lines: Vec<&str> = contents.lines().collect();
-    find_velocity_try_array(&lines).map(|(_, _, v)| v).unwrap_or_default()
-}
-
-fn get_server_port_from_config(id: &str) -> u16 {
-    let dir = match get_server_dir(id) {
-        Ok(d) => d,
-        Err(_) => return 25565,
-    };
-    let props = format!("{}/server.properties", dir);
-    if let Ok(contents) = std::fs::read_to_string(&props) {
-        for line in contents.lines() {
-            if line.starts_with("server-port=") {
-                if let Ok(p) = line["server-port=".len()..].trim().parse::<u16>() {
-                    return p;
-                }
-            }
-        }
-    }
-    25565
-}
-
-fn read_velocity_secret_str(velocity_dir: &str) -> Option<String> {
-    let toml_path = format!("{}/velocity.toml", velocity_dir);
-    if let Ok(contents) = std::fs::read_to_string(&toml_path) {
-        for line in contents.lines() {
-            let t = line.trim();
-            if t.starts_with("forwarding-secret-file") && t.contains('=') {
-                if let Some(s) = t.find('"') {
-                    if let Some(e) = t[s + 1..].find('"') {
-                        let fname = &t[s + 1..s + 1 + e];
-                        let file_path = format!("{}/{}", velocity_dir, fname);
-                        if let Ok(secret) = std::fs::read_to_string(&file_path) {
-                            let secret = secret.trim().to_string();
-                            if !secret.is_empty() { return Some(secret); }
-                        }
-                    }
-                }
-            }
-        }
-        for line in contents.lines() {
-            let t = line.trim();
-            if t.starts_with("forwarding-secret") && !t.starts_with("forwarding-secret-file") && t.contains('=') {
-                if let Some(s) = t.find('"') {
-                    if let Some(e) = t[s + 1..].find('"') {
-                        let secret = &t[s + 1..s + 1 + e];
-                        if !secret.is_empty() { return Some(secret.to_string()); }
-                    }
-                }
-            }
-        }
-    }
-    let secret_path = format!("{}/forwarding.secret", velocity_dir);
-    if let Ok(secret) = std::fs::read_to_string(&secret_path) {
-        let s = secret.trim().to_string();
-        if !s.is_empty() { return Some(s); }
-    }
-    None
-}
-
-fn update_velocity_toml(contents: &str, server_name: &str, address: &str, priority: u64) -> Result<String, String> {
-    let lines: Vec<&str> = contents.lines().collect();
-
-    if let Some((try_start, try_end, mut entries)) = find_velocity_try_array(&lines) {
-        let server_entry_exists = lines.iter().any(|l| {
-            let t = l.trim();
-            t.starts_with(&format!("{} =", server_name)) || t.starts_with(&format!("{}=", server_name))
-        });
-
-        if !entries.contains(&server_name.to_string()) {
-            let pos = (priority as usize).min(entries.len());
-            entries.insert(pos, server_name.to_string());
-        }
-
-        let try_line = format!(
-            "try = [{}]",
-            entries.iter().map(|e| format!("\"{}\"", e)).collect::<Vec<_>>().join(", ")
-        );
-
-        let mut result = String::new();
-        let mut i = 0;
-        while i < lines.len() {
-            if i == try_start {
-                if !server_entry_exists {
-                    result.push_str(&format!("{} = \"{}\"\n", server_name, address));
-                }
-                result.push_str(&try_line);
-                result.push('\n');
-                i = try_end + 1;
-                continue;
-            }
-            result.push_str(lines[i]);
-            result.push('\n');
-            i += 1;
-        }
-        return Ok(result);
-    }
-
-    // No [servers]/try = [...] found. This is expected (not an error) when Velocity
-    // has never been started: velocity.toml only gets its full default template —
-    // including the [servers] section — merged in by Velocity's own config loader
-    // on first run. mcpanel-cli's initial velocity.toml (written at server-creation
-    // time, before the jar has ever executed) only contains a `bind = "..."` line.
-    // Rather than failing the link, create the section ourselves.
-    let entry_line = format!("{} = \"{}\"", server_name, address);
-    let try_line = format!("try = [\"{}\"]", server_name);
-
-    if let Some(idx) = lines.iter().position(|l| l.trim() == "[servers]") {
-        let mut result = String::new();
-        for (i, line) in lines.iter().enumerate() {
-            result.push_str(line);
-            result.push('\n');
-            if i == idx {
-                result.push_str(&entry_line);
-                result.push('\n');
-                result.push_str(&try_line);
-                result.push('\n');
-            }
-        }
-        Ok(result)
-    } else {
-        let mut result = contents.trim_end().to_string();
-        if !result.is_empty() {
-            result.push_str("\n\n");
-        }
-        result.push_str(&format!("[servers]\n{}\n{}\n", entry_line, try_line));
-        Ok(result)
-    }
-}
-
-fn ensure_velocity_forwarding_modern(contents: &str) -> String {
-    let mut result = String::new();
-    for line in contents.lines() {
-        let t = line.trim();
-        if t.starts_with("player-info-forwarding-mode") && t.contains('=') {
-            if let Some(eq) = t.find('=') {
-                let val = t[eq + 1..].trim().trim_matches('"').to_uppercase();
-                if val == "NONE" {
-                    result.push_str("player-info-forwarding-mode = \"MODERN\"\n");
-                    continue;
-                }
-            }
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-    result
-}
-
-fn update_paper_global_yml(contents: &str, secret: &str) -> String {
-    let mut result = String::new();
-    let mut in_proxies = false;
-    let mut in_velocity = false;
-    let mut proxies_indent: usize = 0;
-    let mut velocity_indent: usize = 0;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        let indent = line.len() - line.trim_start().len();
-
-        if in_velocity && indent <= velocity_indent {
-            in_velocity = false;
-        }
-        if in_proxies && indent <= proxies_indent && trimmed != "proxies:" {
-            in_proxies = false;
-            in_velocity = false;
-        }
-
-        if !in_proxies && trimmed == "proxies:" {
-            in_proxies = true;
-            proxies_indent = indent;
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        if in_proxies && !in_velocity && trimmed == "velocity:" {
-            in_velocity = true;
-            velocity_indent = indent;
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-
-        if in_velocity {
-            let spaces = " ".repeat(indent);
-            if trimmed.starts_with("enabled:") {
-                result.push_str(&format!("{}enabled: true\n", spaces));
-                continue;
-            }
-            if trimmed.starts_with("online-mode:") {
-                result.push_str(&format!("{}online-mode: true\n", spaces));
-                continue;
-            }
-            if trimmed.starts_with("secret:") {
-                result.push_str(&format!("{}secret: '{}'\n", spaces, secret));
-                continue;
-            }
-        }
-
-        result.push_str(line);
-        result.push('\n');
-    }
-    result
-}
-
-#[tauri::command]
-pub fn proxy_info(velocity_id: String) -> Value {
-    let dir = match get_server_dir(&velocity_id) {
-        Ok(d) => d,
-        Err(e) => return serde_json::json!({"error": e}),
-    };
-    let toml_path = format!("{}/velocity.toml", dir);
-    let contents = match std::fs::read_to_string(&toml_path) {
-        Ok(c) => c,
-        Err(e) => return serde_json::json!({"error": format!("Failed to read velocity.toml: {}", e)}),
-    };
-    serde_json::json!({"tryList": parse_velocity_try_list(&contents)})
-}
-
-#[tauri::command]
-pub fn link_to_proxy(
-    paper_id: String,
-    velocity_id: String,
-    server_name: String,
-    priority: u64,
-    custom_ip: Option<String>,
-) -> Value {
-    let paper_dir = match get_server_dir(&paper_id) {
-        Ok(d) => d,
-        Err(e) => return serde_json::json!({"error": e}),
-    };
-    let velocity_dir = match get_server_dir(&velocity_id) {
-        Ok(d) => d,
-        Err(e) => return serde_json::json!({"error": e}),
-    };
-
-    let port = get_server_port_from_config(&paper_id);
-    let address = match custom_ip {
-        Some(ref ip) if !ip.is_empty() => format!("{}:{}", ip, port),
-        _ => format!("127.0.0.1:{}", port),
-    };
-
-    // The forwarding secret (and the [servers]/try = [...] section handled below)
-    // only exist once Velocity has generated its full config, which happens on its
-    // own first run — not at server-creation time. Check this up front: without a
-    // real secret, linking would "succeed" but leave modern forwarding silently
-    // broken (empty secret in paper-global.yml).
-    let secret = read_velocity_secret_str(&velocity_dir).unwrap_or_default();
-    if secret.is_empty() {
-        return serde_json::json!({"error": "This Velocity proxy hasn't been started yet, so it hasn't generated its forwarding secret. Start it once, then try linking again."});
-    }
-
-    // Update velocity.toml
-    let toml_path = format!("{}/velocity.toml", velocity_dir);
-    let toml_contents = match std::fs::read_to_string(&toml_path) {
-        Ok(c) => c,
-        Err(e) => return serde_json::json!({"error": format!("Failed to read velocity.toml: {}", e)}),
-    };
-    let updated_toml = match update_velocity_toml(&toml_contents, &server_name, &address, priority) {
-        Ok(c) => c,
-        Err(e) => return serde_json::json!({"error": e}),
-    };
-    let updated_toml = ensure_velocity_forwarding_modern(&updated_toml);
-    if let Err(e) = std::fs::write(&toml_path, &updated_toml) {
-        return serde_json::json!({"error": format!("Failed to write velocity.toml: {}", e)});
-    }
-
-    // Set online-mode=false in server.properties
-    let props_path = format!("{}/server.properties", paper_dir);
-    if let Ok(props) = std::fs::read_to_string(&props_path) {
-        let updated = if props.contains("online-mode=") {
-            let mut r = String::new();
-            for line in props.lines() {
-                if line.starts_with("online-mode=") {
-                    r.push_str("online-mode=false\n");
-                } else {
-                    r.push_str(line);
-                    r.push('\n');
-                }
-            }
-            r
-        } else {
-            format!("{}\nonline-mode=false\n", props.trim_end())
-        };
-        let _ = std::fs::write(&props_path, updated);
-    }
-
-    // Update paper-global.yml with forwarding secret
-    let paper_global_path = format!("{}/config/paper-global.yml", paper_dir);
-    if let Ok(paper_global) = std::fs::read_to_string(&paper_global_path) {
-        let updated = update_paper_global_yml(&paper_global, &secret);
-        let _ = std::fs::write(&paper_global_path, updated);
-    }
-
-    serde_json::json!({"success": true})
-}
+// `proxy_info` / `link_to_proxy` are no longer implemented here: the frontend
+// calls `mcpanel api proxy info|link` through run_cli. The CLI performs the
+// link as one transaction across velocity.toml, server.properties,
+// paper-global.yml and config.json — rolling every file back if any write
+// fails — and reports failures with its own message and error code, which the
+// UI shows verbatim. The old Rust copy skipped failed writes silently.
 
 // ─── Velocity forwarding secret ───────────────────────────────────────────────
 
@@ -2821,6 +2477,42 @@ fn server_backups_dir(server_id: &str) -> String {
     format!("{}/backups/{}", mcpanel_home(), server_id)
 }
 
+/// Error document for a CLI run that printed no usable JSON. The CLI reports
+/// its own failures as {"error", "code"} and those are passed through as-is;
+/// this only covers runs where it couldn't (a crash before it got going, a
+/// broken interpreter, ...). Shows what the CLI wrote to stderr when it wrote
+/// anything, so the user sees the real reason rather than a generic message.
+fn cli_unusable_output(stderr: &[u8], fallback: &str) -> Value {
+    let text = String::from_utf8_lossy(stderr).trim().to_string();
+    if text.is_empty() {
+        return serde_json::json!({"error": fallback, "code": "cli_bad_output"});
+    }
+    let tail: String = {
+        let chars: Vec<char> = text.chars().collect();
+        let start = chars.len().saturating_sub(1000);
+        chars[start..].iter().collect()
+    };
+    serde_json::json!({"error": tail, "code": "cli_failed"})
+}
+
+fn cli_spawn_error(e: impl std::fmt::Display) -> Value {
+    serde_json::json!({"error": format!("MCPanel-CLI could not be started: {}", e), "code": "cli_unavailable"})
+}
+
+/// Drains a child's stderr in the background (so a chatty process can never
+/// block on a full pipe) and hands back the collected bytes.
+fn collect_stderr(child: &mut tokio::process::Child) -> tokio::task::JoinHandle<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let stderr = child.stderr.take();
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut s) = stderr {
+            let _ = s.read_to_end(&mut buf).await;
+        }
+        buf
+    })
+}
+
 #[tauri::command]
 pub async fn create_backup(id: String, app: AppHandle) -> Value {
     use tokio::io::AsyncBufReadExt;
@@ -2833,11 +2525,13 @@ pub async fn create_backup(id: String, app: AppHandle) -> Value {
     let mut child = match mcpanel_async_cmd()
         .args(["api", "backup", "create", "-id", &id])
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return serde_json::json!({"error": e.to_string()}),
+        Err(e) => return cli_spawn_error(e),
     };
+    let stderr_task = collect_stderr(&mut child);
 
     let pid = child.id().unwrap_or(0);
     {
@@ -2851,7 +2545,7 @@ pub async fn create_backup(id: String, app: AppHandle) -> Value {
     let stdout = child.stdout.take().unwrap();
     let reader = tokio::io::BufReader::new(stdout);
     let mut lines = reader.lines();
-    let mut final_result = serde_json::json!({"error": "Backup produced no output"});
+    let mut final_result = Value::Null;
 
     while let Ok(Some(line)) = lines.next_line().await {
         if let Ok(val) = serde_json::from_str::<Value>(&line) {
@@ -2864,10 +2558,14 @@ pub async fn create_backup(id: String, app: AppHandle) -> Value {
         }
     }
     let _ = child.wait().await;
+    let stderr = stderr_task.await.unwrap_or_default();
 
     {
         let state = app.state::<AppState>();
         *state.active_backup.lock().unwrap() = None;
+    }
+    if final_result.is_null() {
+        return cli_unusable_output(&stderr, "Backup produced no output");
     }
     final_result
 }
@@ -2876,8 +2574,14 @@ pub async fn create_backup(id: String, app: AppHandle) -> Value {
 pub async fn list_backups(id: String) -> Value {
     let out = mcpanel_async_cmd().args(["api", "backup", "list", "-id", &id]).output().await;
     match out {
-        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| serde_json::json!({"backups": []})),
-        Err(e) => serde_json::json!({"error": e.to_string()}),
+        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| {
+            if o.stderr.iter().any(|b| !b.is_ascii_whitespace()) {
+                cli_unusable_output(&o.stderr, "")
+            } else {
+                serde_json::json!({"backups": []})
+            }
+        }),
+        Err(e) => cli_spawn_error(e),
     }
 }
 
@@ -2885,8 +2589,9 @@ pub async fn list_backups(id: String) -> Value {
 pub async fn delete_backup(id: String, backup_name: String) -> Value {
     let out = mcpanel_async_cmd().args(["api", "backup", "delete", "-id", &id, "-name", &backup_name]).output().await;
     match out {
-        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| serde_json::json!({"error": "Invalid response"})),
-        Err(e) => serde_json::json!({"error": e.to_string()}),
+        Ok(o) => serde_json::from_slice(&o.stdout)
+            .unwrap_or_else(|_| cli_unusable_output(&o.stderr, "MCPanel-CLI returned an unreadable response")),
+        Err(e) => cli_spawn_error(e),
     }
 }
 
@@ -2897,16 +2602,18 @@ pub async fn restore_backup(id: String, backup_name: String, app: AppHandle) -> 
     let mut child = match mcpanel_async_cmd()
         .args(["api", "backup", "restore", "-id", &id, "-name", &backup_name])
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return serde_json::json!({"error": e.to_string()}),
+        Err(e) => return cli_spawn_error(e),
     };
+    let stderr_task = collect_stderr(&mut child);
 
     let stdout = child.stdout.take().unwrap();
     let reader = tokio::io::BufReader::new(stdout);
     let mut lines = reader.lines();
-    let mut final_result = serde_json::json!({"error": "Restore produced no output"});
+    let mut final_result = Value::Null;
 
     while let Ok(Some(line)) = lines.next_line().await {
         if let Ok(val) = serde_json::from_str::<Value>(&line) {
@@ -2919,6 +2626,10 @@ pub async fn restore_backup(id: String, backup_name: String, app: AppHandle) -> 
         }
     }
     let _ = child.wait().await;
+    let stderr = stderr_task.await.unwrap_or_default();
+    if final_result.is_null() {
+        return cli_unusable_output(&stderr, "Restore produced no output");
+    }
     final_result
 }
 
