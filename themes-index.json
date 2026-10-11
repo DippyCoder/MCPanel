@@ -35,6 +35,15 @@
       "version": "2.2.0",
       "appVersion": "2.2.0",
       "downloadUrl": "https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/purple-dark.zip"
+    },
+    {
+      "name": "Bamboo Jungle",
+      "creator": "DippyCoder",
+      "creatorUrl": "https://github.com/DippyCoder",
+      "description": "Jungle-themed MCPanel theme.",
+      "version": "1.0.0",
+      "appVersion": "2.3.0",
+      "downloadUrl": "https://raw.githubusercontent.com/DippyCoder/MCPanel/themes/bamboo-jungle.zip"
     }
   ]
 }
